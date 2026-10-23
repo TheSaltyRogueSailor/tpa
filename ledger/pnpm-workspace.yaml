@@ -1,0 +1,5 @@
+# Standalone local-only TPALedger toolchain; intentionally not part of DingDong's workspace.
+packages: []
+overrides:
+  tmp: 0.2.7
+  ws: 8.21.0

@@ -1,0 +1,25 @@
+{
+  "name": "tpa-ledger-local",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-only compiler and isolated-EVM tests for the TPALedger server-attestation registry.",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.18.0",
+  "engines": {
+    "node": ">=22.13.0 <23",
+    "pnpm": "10.18.0"
+  },
+  "scripts": {
+    "compile": "node scripts/compile.js",
+    "test": "pnpm run compile && mocha --reporter spec --timeout 30000 \"test/**/*.test.js\"",
+    "test:local": "pnpm test",
+    "audit:toolchain": "pnpm audit --ignore-workspace"
+  },
+  "devDependencies": {
+    "@openzeppelin/contracts": "5.6.1",
+    "ethers": "6.17.0",
+    "ganache": "7.9.2",
+    "mocha": "12.0.3",
+    "solc": "0.8.24"
+  }
+}

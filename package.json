@@ -1,0 +1,45 @@
+{
+  "name": "tpa-authorization-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "description": "Standalone WebAuthn-backed transfer-authorization pilot; no payment execution or chain submission.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sync:lifecycle-store": "node scripts/sync-lifecycle-store.mjs",
+    "audit:runtime": "pnpm audit --prod"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "14.0.0",
+    "@simplewebauthn/server": "14.0.3",
+    "drizzle-orm": "0.45.2",
+    "express": "4.22.2",
+    "mysql2": "3.24.3",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/node": "24.7.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12",
+    "vite": "8.3.5",
+    "@levischuck/tiny-cbor": "0.2.11"
+  },
+  "packageManager": "pnpm@10.18.0"
+}

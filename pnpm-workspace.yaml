@@ -1,0 +1,6 @@
+packages:
+  - '.'
+  - '!ledger/**'
+overrides:
+  qs: 6.16.0
+  vite: 8.3.5
