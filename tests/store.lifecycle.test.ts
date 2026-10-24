@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tpaCeremonies, tpaCredentials, tpaIntents } from "../src/schema.js";
-import { canonicalTpaMandate, type TpaMandate } from "../src/domain.js";
+import { canonicalTpaMandate, type TpaTransferMandate } from "../src/domain.js";
 import { createTpaStore } from "../src/store.js";
 import type { TpaHostAdapter } from "../src/host/contracts.js";
 
@@ -69,7 +69,7 @@ class MemoryDb {
 class SelectQuery<T = Record<string, any>> implements PromiseLike<T[]> { private maximum = Infinity; private table: unknown; private condition: unknown; constructor(private readonly rows: (table: unknown, condition: unknown) => T[]) {} from(table: unknown) { this.table = table; return this; } where(condition: unknown) { this.condition = condition; return this; } orderBy(..._fields: unknown[]) { return this; } limit(value: number) { this.maximum = value; return this; } for(_mode: string) { return this; } then<TResult1 = T[], TResult2 = never>(ok?: ((value: T[]) => TResult1 | PromiseLike<TResult1>) | null, no?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null) { return Promise.resolve(this.rows(this.table, this.condition).slice(0, this.maximum)).then(ok, no); } }
 
 let database: MemoryDb; let advanceOnOwnerLock: number | undefined; let store: ReturnType<typeof createTpaStore>;
-function mandate(overrides: Partial<TpaMandate> = {}): TpaMandate { const issuedAt = Math.floor(NOW / 1_000); return { type: "TPA-mandate", version: "2.0", action: "transfer-authorization-pilot", issuerUserId: 1, currency: "USD", paymentNetwork: "internal-usd-pilot", amountBaseUnits: "1", recipient: "user:2", feeBaseUnits: "0", nonce: ID("d"), issuedAt, expires: issuedAt + 300, scope: "single_use", ledgerDomain: "dingdong-tpa/rootstock-testnet/attestation-v2", ...overrides }; }
+function mandate(overrides: Partial<TpaTransferMandate> = {}): TpaTransferMandate { const issuedAt = Math.floor(NOW / 1_000); return { type: "TPA-mandate", version: "2.0", action: "transfer-authorization-pilot", issuerUserId: 1, currency: "USD", paymentNetwork: "internal-usd-pilot", amountBaseUnits: "1", recipient: "user:2", feeBaseUnits: "0", nonce: ID("d"), issuedAt, expires: issuedAt + 300, scope: "single_use", ledgerDomain: "dingdong-tpa/rootstock-testnet/attestation-v2", ...overrides }; }
 function intent(overrides: Record<string, any> = {}) { const value = mandate(); return { id: ID("a"), userId: 1, sessionHash: SESSION_A, origin: ORIGIN, mandateJson: JSON.stringify(value), mandateHash: digest(canonicalTpaMandate(value)), state: "pending", authorizedCredentialIdHash: null, createdAtMs: NOW - 1, expiresAtMs: value.expires * 1_000, authorizedAtMs: null, consumedAtMs: null, revokedAtMs: null, ...overrides }; }
 function credential(overrides: Record<string, any> = {}) { return { credentialIdHash: credentialHash, credentialId: CREDENTIAL_ID, publicKeyBase64: "public_key", counter: 0, transportsJson: "[]", label: "Registered device", deviceType: "singleDevice", backedUp: false, createdAtMs: NOW - 1, revokedAtMs: null, userId: 1, ...overrides }; }
 function registrationCeremony(overrides: Record<string, any> = {}) { return { id: ID("c"), userId: 1, sessionHash: SESSION_A, origin: ORIGIN, kind: "registration", challenge: "c".repeat(43), intentId: null, label: "Registered device", expiresAtMs: NOW + 1_000, consumedAtMs: NOW - 1, completedAtMs: null, registeredCredentialIdHash: null, createdAtMs: NOW - 2, ...overrides }; }

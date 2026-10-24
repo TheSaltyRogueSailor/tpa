@@ -5,13 +5,15 @@
  * against a disposable MySQL/MariaDB schema. A synthetic in-process P-256
  * authenticator stands in for the human's passkey. Nothing here moves money.
  *
+ * This file pins the legacy 2.0 transfer mandate (legacyTransferMandates: true, no signer)
+ * to prove backward compatibility. The hardened checkout mandate is covered by
+ * tests/mandate.hardening.test.ts.
+ *
  * Opt-in: set TPA_TEST_DATABASE_URL (e.g. mysql://user:pass@127.0.0.1:3306/tpa_test).
  * The suite DROPS and recreates the four tpa_* tables in that schema; never point it
  * at a shared or production database. Without the variable the suite is skipped.
  */
-import { createHash, generateKeyPairSync, randomBytes, sign, type KeyObject } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { encodeCBOR } from "@levischuck/tiny-cbor";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { drizzle } from "drizzle-orm/mysql2";
 import mysql from "mysql2/promise";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -22,6 +24,8 @@ import { assertFreshTpaReview } from "../src/review.js";
 import { tpaSchema } from "../src/schema.js";
 import { createTpaService, type TpaService } from "../src/service.js";
 import { createTpaStore } from "../src/store.js";
+import { syntheticAuthenticator } from "./support/authenticator.js";
+import { resetTpaSchema } from "./support/schema.js";
 
 const DATABASE_URL = process.env.TPA_TEST_DATABASE_URL;
 const ORIGIN = "https://tpa.example.test";
@@ -33,36 +37,7 @@ const owner = { principalId: 1, sessionHash: "a".repeat(64), owner: true as cons
 const ctx = { owner, headers: { origin: ORIGIN } };
 const ORDER = { currency: "USD" as const, amountBaseUnits: "2000", recipient: "user:42", consent: true as const }; // $20.00 to merchant account user:42
 
-/** Synthetic platform authenticator: real P-256 keys, real COSE/CBOR, real ECDSA signatures. */
-function authenticator() {
-  const credentialId = randomBytes(32);
-  const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  let counter = 0;
-  const jwk = pair.publicKey.export({ format: "jwk" });
-  const coseKey = encodeCBOR(new Map<number, number | Uint8Array>([[1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x!, "base64url")], [-3, Buffer.from(jwk.y!, "base64url")]]));
-  const clientData = (type: string, challenge: string) => Buffer.from(JSON.stringify({ type, challenge, origin: ORIGIN, crossOrigin: false }));
-  const authData = (flags: number, count: number, attested: boolean) => {
-    const parts: Uint8Array[] = [createHash("sha256").update(RP_ID).digest(), Buffer.from([flags]), Buffer.from([(count >>> 24) & 255, (count >>> 16) & 255, (count >>> 8) & 255, count & 255])];
-    if (attested) parts.push(Buffer.alloc(16), Buffer.from([0, credentialId.length]), credentialId, coseKey);
-    return Buffer.concat(parts);
-  };
-  return {
-    id: b64(credentialId),
-    register(challenge: string) {
-      const auth = authData(0x45, 0, true);
-      return { id: b64(credentialId), rawId: b64(credentialId), type: "public-key" as const, clientExtensionResults: {}, response: { clientDataJSON: b64(clientData("webauthn.create", challenge)), attestationObject: b64(encodeCBOR(new Map<string, Parameters<typeof encodeCBOR>[0]>([["fmt", "none"], ["authData", auth], ["attStmt", new Map()]]))) } };
-    },
-    assert(challenge: string, opts: { signWith?: KeyObject; corruptSignature?: boolean; tamperClientData?: boolean } = {}) {
-      counter += 1;
-      const data = clientData("webauthn.get", challenge);
-      const auth = authData(0x05, counter, false);
-      const signature = Buffer.from(sign("sha256", Buffer.concat([auth, createHash("sha256").update(data).digest()]), opts.signWith ?? pair.privateKey));
-      if (opts.corruptSignature) signature[signature.length - 1] = signature[signature.length - 1]! ^ 0x01;
-      const sentData = opts.tamperClientData ? Buffer.from(data.toString().replace("crossOrigin\":false", "crossOrigin\":false ")) : data;
-      return { id: b64(credentialId), rawId: b64(credentialId), type: "public-key" as const, clientExtensionResults: {}, response: { clientDataJSON: b64(sentData), authenticatorData: b64(auth), signature: b64(signature) } };
-    },
-  };
-}
+const authenticator = () => syntheticAuthenticator(ORIGIN, RP_ID);
 
 let pool: mysql.Pool;
 let clock = T0;
@@ -71,10 +46,7 @@ let device: ReturnType<typeof authenticator>;
 let credentialIdHash: string;
 
 async function freshSchema() {
-  const ddl = readFileSync(new URL("../migrations/0000_tpa_standalone.sql", import.meta.url), "utf8");
-  await pool.query("DROP TABLE IF EXISTS tpa_ceremonies, tpa_intents, tpa_credentials, tpa_principals");
-  for (const statement of ddl.replace(/^--.*$/gm, "").split(";").map(s => s.trim()).filter(Boolean)) await pool.query(statement);
-  await pool.query("INSERT INTO tpa_principals (id, isOwner, enabled) VALUES (1, TRUE, TRUE)");
+  await resetTpaSchema(pool);
 }
 
 async function intentRow(id: string) {
@@ -106,7 +78,7 @@ describe.skipIf(!DATABASE_URL)("Proof of Permission: signed mandate must match e
     clock = T0;
     const db = drizzle(pool, { schema: tpaSchema, mode: "default" });
     const store = createTpaStore(createMinimalOwnerAdapter(async () => db as never));
-    service = createTpaService({ store, authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now: () => clock });
+    service = createTpaService({ store, authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now: () => clock, legacyTransferMandates: true });
     device = authenticator();
     const reg = await service.registrationOptions(ctx, { label: "Raul phone", consent: true });
     const saved = await service.registrationVerify(ctx, { ceremonyId: reg.ceremonyId, response: device.register(reg.options.challenge) });
@@ -343,7 +315,7 @@ describe.skipIf(!DATABASE_URL)("Proof of Permission: signed mandate must match e
       const ids = ["1".repeat(64), "2".repeat(64), "1".repeat(64), "3".repeat(64)]; // service draws nonce then intent id: [nonce, id, reused nonce, id]
       let n = 0;
       const db = drizzle(pool, { schema: tpaSchema, mode: "default" });
-      const svc = createTpaService({ store: createTpaStore(createMinimalOwnerAdapter(async () => db as never)), authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now: () => clock, randomId: () => ids[n++]! });
+      const svc = createTpaService({ store: createTpaStore(createMinimalOwnerAdapter(async () => db as never)), authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now: () => clock, randomId: () => ids[n++]!, legacyTransferMandates: true });
       await svc.createIntent(ctx, ORDER);
       await expect(svc.createIntent(ctx, { ...ORDER, amountBaseUnits: "2001" })).rejects.toEqual(refused("intent"));
       const [rows] = await pool.query("SELECT COUNT(*) AS n FROM tpa_intents"); expect(Number((rows as any[])[0].n)).toBe(1);
