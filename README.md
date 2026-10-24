@@ -108,6 +108,24 @@ All money is an integer count of base units (cents for USD) carried as a string.
 - **Migration.** Apply `migrations/0001_tpa_mandate_hardening.sql` after `0000`. It only adds tables.
 - **Legacy.** The 2.0 amount-and-recipient transfer mandate is refused unless `legacyTransferMandates: true`.
 
+## Red-team demo (local, in memory)
+
+```
+pnpm install --frozen-lockfile
+pnpm demo                 # colored terminal output (FORCE_COLOR=1 pnpm demo if your shell sets NO_COLOR)
+pnpm demo:html            # also writes examples/redteam-demo.html for screen recording
+```
+
+`scripts/redteam-demo.ts` drives the real `createTpaService` with a real Ed25519 signer (key generated in memory, never printed) and the synthetic WebAuthn authenticator from `tests/support/authenticator.ts`. It needs no database and no network. Persistence is a demo-only in-memory port of the store and evidence rules (`scripts/demo/memory-store.ts`); production uses the MySQL store. It runs one legit checkout (allowed) and then blocks these five attack types, printing each reason code and the audit log:
+
+1. changed terms at checkout (`terms_changed:merchant_mismatch`, `terms_changed:items_mismatch`, `terms_changed:checkout_total_inconsistent`)
+2. replay of a consumed mandate (`intent`)
+3. forged signature or tampered stored mandate (`mandate_signature_invalid:bad_signature`, `mandate_signature_invalid:hash_mismatch`)
+4. no passkey approval (`intent`), a passkey signature made for a different mandate (`ceremony`), or a passkey prompt not bound to the mandate (`challenge_unbound`)
+5. expired or revoked mandate (`intent`)
+
+It exits non-zero if any case does not behave as expected. TPA does not claim to stop every fraud; it blocks these attack types for the checkout it is shown.
+
 ## Browser reference
 
 `client-reference/tpa-client.ts` uses `@simplewebauthn/browser` and same-origin cookie credentials. It sends no user identity. Before authorize, consume, or revoke it reloads status and uses `assertFreshTpaReview()` to reject changes to reviewed mandate evidence. A host may build its own UI; the library supplies no UI website.

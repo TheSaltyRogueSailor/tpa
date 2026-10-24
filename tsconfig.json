@@ -8,8 +8,20 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*.ts", "client-reference/**/*.ts", "examples/**/*.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "dist", "ledger"]
+  "include": [
+    "src/**/*.ts",
+    "client-reference/**/*.ts",
+    "examples/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "ledger"
+  ]
 }

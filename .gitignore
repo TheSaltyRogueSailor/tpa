@@ -9,3 +9,4 @@ ledger/build/
 artifacts/
 cache/
 *.log
+.demo-build/

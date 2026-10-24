@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TPA: Triple Protection Authentication - red-team demo</title>
+<style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:32px;max-width:1000px;margin:auto}
+h1{margin:0;font-size:30px}.sub{color:#8b949e;margin:6px 0 20px}.pillars{display:flex;gap:12px;margin-bottom:28px}.pillars div{flex:1;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;font-size:14px}
+.case{display:flex;gap:16px;align-items:flex-start;background:#161b22;border:1px solid #30363d;border-left:6px solid;border-radius:10px;padding:14px 16px;margin:10px 0}
+.case.ok{border-left-color:#2ea043}.case.no{border-left-color:#f85149}.badge{font-weight:800;min-width:90px;padding:6px 8px;border-radius:6px;text-align:center;font-size:13px}
+.ok .badge{background:#2ea04333;color:#3fb950}.no .badge{background:#f8514933;color:#ff7b72}.grp{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+h3{margin:2px 0 4px;font-size:17px}p{margin:4px 0;color:#c9d1d9;font-size:14px}.code b{font-family:ui-monospace,Menlo,monospace}.code span{color:#8b949e}
+.summary{font-size:22px;font-weight:700;margin:28px 0 6px}.g{color:#3fb950}.r{color:#ff7b72}
+table{width:100%;border-collapse:collapse;font-family:ui-monospace,Menlo,monospace;font-size:12px;margin-top:10px}td,th{padding:5px 6px;border-bottom:1px solid #21262d;text-align:left}
+tr.refused td:nth-child(4){color:#ff7b72}tr.approved td:nth-child(4){color:#3fb950}.foot{color:#8b949e;font-size:12px;margin-top:24px}
+</style></head><body>
+<h1>TPA: Triple Protection Authentication</h1>
+<div class="sub">Red-team demo: one legit AI-agent checkout, then five attack types. Generated 2026-10-24T17:38:56.309Z from a local, in-memory run of the real TPA service.</div>
+<div class="pillars"><div><b>1. Signed mandate</b><br>The server signs the exact checkout: merchant, items, shipping, tax, total.</div><div><b>2. Passkey approval</b><br>The owner approves that exact mandate with a passkey.</div><div><b>3. Exact match, once</b><br>At payment time the checkout must match, and the approval works once.</div></div>
+<div class="case ok"><div class="badge">ALLOWED</div><div><div class="grp">Case 0</div><h3>Agent checks out the exact cart the owner approved</h3><p>Agent shops, server signs the mandate, owner approves with passkey, merchant charges the same cart.</p><p class="code">result: <b>ALLOWED</b> <span>(checkout matched the signed, passkey-approved mandate)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 1</div><h3>Swapped merchant</h3><p>Owner approved Acme Store; the checkout that shows up is from Evil Store.</p><p class="code">reason code: <b>terms_changed:merchant_mismatch</b> <span>(a different store than the one the owner approved)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 1</div><h3>Price raised on an item</h3><p>Mug price quietly raised from $7.50 to $17.50 (total recomputed to $57.80).</p><p class="code">reason code: <b>terms_changed:items_mismatch</b> <span>(the items or prices differ from what the owner approved)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 1</div><h3>Total inflated</h3><p>Same items, but the total charged is $97.80 instead of $37.80.</p><p class="code">reason code: <b>terms_changed:checkout_total_inconsistent</b> <span>(the total does not add up from the approved items, shipping and tax)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 2</div><h3>Replay the already-paid Case 0 mandate</h3><p>Agent tries to charge the same approved cart a second time.</p><p class="code">reason code: <b>intent</b> <span>(the approval cannot be used: already used, never approved, expired or revoked)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 3</div><h3>Forged server signature</h3><p>Attacker re-signs the mandate with their own key under the real key id.</p><p class="code">reason code: <b>mandate_signature_invalid:bad_signature</b> <span>(the server&#39;s signature on the mandate does not verify)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 3</div><h3>Tampered mandate in storage</h3><p>Attacker edits the stored mandate to pay Evil Store and recomputes its hash.</p><p class="code">reason code: <b>mandate_signature_invalid:hash_mismatch</b> <span>(the mandate was altered after the server signed it)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 4</div><h3>No passkey approval at all</h3><p>Agent creates a $1353.92 laptop mandate and tries to pay without the owner approving.</p><p class="code">reason code: <b>intent</b> <span>(the approval cannot be used: already used, never approved, expired or revoked)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 4</div><h3>Passkey approval for a different mandate</h3><p>Owner approves a $37.81 mug order; the agent submits that passkey signature for the laptop instead.</p><p class="code">reason code: <b>ceremony</b> <span>(the passkey signature was not made for this purchase)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 4</div><h3>Passkey prompt not tied to the mandate</h3><p>Owner is tricked into a generic sign-in style passkey prompt; it is used to approve the laptop.</p><p class="code">reason code: <b>challenge_unbound</b> <span>(the passkey prompt was not tied to this purchase&#39;s mandate)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 5</div><h3>Expired mandate</h3><p>Approved mandate is used after its 5 minute lifetime (simulated clock +5m01s).</p><p class="code">reason code: <b>intent</b> <span>(the approval cannot be used: already used, never approved, expired or revoked)</span></p></div></div>
+<div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 5</div><h3>Revoked mandate</h3><p>Owner approves, then changes their mind and revokes; the agent tries to pay anyway.</p><p class="code">reason code: <b>intent</b> <span>(the approval cannot be used: already used, never approved, expired or revoked)</span></p></div></div>
+<div class="summary"><span class="g">1 legit checkout allowed</span>, <span class="r">11 attacks blocked</span> across 5 attack types.</div>
+<p>TPA blocks these five attack types: changed terms at checkout, replay, forged or tampered mandates, missing or misused passkey approval, and expired or revoked mandates.</p>
+<h2>Audit log</h2><p>Every approval and refusal, oldest first. No signatures, passkey challenges, nonces, session tokens or keys are stored in it.</p>
+<table><tr><th>#</th><th>time (UTC)</th><th>action</th><th>outcome</th><th>reason code</th><th>intent</th><th>mandate</th><th>key id</th></tr>
+<tr class="approved"><td>1</td><td>17:38:56</td><td>credential_registered</td><td>approved</td><td>ok</td><td>-</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>2</td><td>17:38:56</td><td>intent_created</td><td>approved</td><td>ok</td><td>cc35d3c2</td><td>015aef2bdb</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>3</td><td>17:38:58</td><td>authorized</td><td>approved</td><td>ok</td><td>cc35d3c2</td><td>015aef2bdb</td><td>tpa-demo-key-1</td></tr>
+<tr class="attempt"><td>4</td><td>17:39:00</td><td>consume</td><td>attempt</td><td>pending</td><td>cc35d3c2</td><td>015aef2bdb</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>5</td><td>17:39:00</td><td>consumed</td><td>approved</td><td>ok</td><td>cc35d3c2</td><td>015aef2bdb</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>6</td><td>17:39:00</td><td>intent_created</td><td>approved</td><td>ok</td><td>598cf6cf</td><td>253d88c52d</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>7</td><td>17:39:00</td><td>authorized</td><td>approved</td><td>ok</td><td>598cf6cf</td><td>253d88c52d</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>8</td><td>17:39:01</td><td>consume</td><td>refused</td><td>terms_changed:merchant_mismatch</td><td>598cf6cf</td><td>-</td><td>-</td></tr>
+<tr class="refused"><td>9</td><td>17:39:01</td><td>consume</td><td>refused</td><td>terms_changed:items_mismatch</td><td>598cf6cf</td><td>-</td><td>-</td></tr>
+<tr class="refused"><td>10</td><td>17:39:01</td><td>consume</td><td>refused</td><td>terms_changed:checkout_total_inconsistent</td><td>598cf6cf</td><td>-</td><td>-</td></tr>
+<tr class="attempt"><td>11</td><td>17:39:02</td><td>consume</td><td>attempt</td><td>pending</td><td>cc35d3c2</td><td>015aef2bdb</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>12</td><td>17:39:02</td><td>consume</td><td>refused</td><td>intent</td><td>cc35d3c2</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>13</td><td>17:39:02</td><td>intent_created</td><td>approved</td><td>ok</td><td>d5790fe0</td><td>070c11bd38</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>14</td><td>17:39:02</td><td>authorized</td><td>approved</td><td>ok</td><td>d5790fe0</td><td>070c11bd38</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>15</td><td>17:39:03</td><td>consume</td><td>refused</td><td>mandate_signature_invalid:bad_signature</td><td>d5790fe0</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>16</td><td>17:39:03</td><td>intent_created</td><td>approved</td><td>ok</td><td>781457c1</td><td>990a3f70fe</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>17</td><td>17:39:03</td><td>authorized</td><td>approved</td><td>ok</td><td>781457c1</td><td>990a3f70fe</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>18</td><td>17:39:04</td><td>consume</td><td>refused</td><td>mandate_signature_invalid:hash_mismatch</td><td>781457c1</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>19</td><td>17:39:04</td><td>intent_created</td><td>approved</td><td>ok</td><td>136a5938</td><td>6998be5fb7</td><td>tpa-demo-key-1</td></tr>
+<tr class="attempt"><td>20</td><td>17:39:04</td><td>consume</td><td>attempt</td><td>pending</td><td>136a5938</td><td>6998be5fb7</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>21</td><td>17:39:04</td><td>consume</td><td>refused</td><td>intent</td><td>136a5938</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>22</td><td>17:39:04</td><td>intent_created</td><td>approved</td><td>ok</td><td>41ab2108</td><td>ae920ca7d1</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>23</td><td>17:39:04</td><td>authorize</td><td>refused</td><td>ceremony</td><td>136a5938</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>24</td><td>17:39:04</td><td>intent_created</td><td>approved</td><td>ok</td><td>b4e8cb7e</td><td>e9024006a1</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>25</td><td>17:39:04</td><td>authorize</td><td>refused</td><td>challenge_unbound</td><td>b4e8cb7e</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>26</td><td>17:39:04</td><td>intent_created</td><td>approved</td><td>ok</td><td>7e7cf1e4</td><td>c0fea38432</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>27</td><td>17:39:04</td><td>authorized</td><td>approved</td><td>ok</td><td>7e7cf1e4</td><td>c0fea38432</td><td>tpa-demo-key-1</td></tr>
+<tr class="attempt"><td>28</td><td>17:44:05</td><td>consume</td><td>attempt</td><td>pending</td><td>7e7cf1e4</td><td>c0fea38432</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>29</td><td>17:44:05</td><td>consume</td><td>refused</td><td>intent</td><td>7e7cf1e4</td><td>-</td><td>-</td></tr>
+<tr class="approved"><td>30</td><td>17:44:05</td><td>intent_created</td><td>approved</td><td>ok</td><td>7f583984</td><td>5fbb1158dd</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>31</td><td>17:44:05</td><td>authorized</td><td>approved</td><td>ok</td><td>7f583984</td><td>5fbb1158dd</td><td>tpa-demo-key-1</td></tr>
+<tr class="approved"><td>32</td><td>17:44:05</td><td>revoked</td><td>approved</td><td>ok</td><td>7f583984</td><td>5fbb1158dd</td><td>-</td></tr>
+<tr class="attempt"><td>33</td><td>17:44:06</td><td>consume</td><td>attempt</td><td>pending</td><td>7f583984</td><td>5fbb1158dd</td><td>tpa-demo-key-1</td></tr>
+<tr class="refused"><td>34</td><td>17:44:06</td><td>consume</td><td>refused</td><td>intent</td><td>7f583984</td><td>-</td><td>-</td></tr>
+</table>
+<div class="foot">Pilot scope: TPA authorizes; it does not move money, contact a payment processor, or write to a blockchain. Run locally with <code>pnpm demo</code>.</div>
+</body></html>

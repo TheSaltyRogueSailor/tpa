@@ -23,7 +23,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "sync:lifecycle-store": "node scripts/sync-lifecycle-store.mjs",
-    "audit:runtime": "pnpm audit --prod"
+    "audit:runtime": "pnpm audit --prod",
+    "demo": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js",
+    "demo:html": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js --html examples/redteam-demo.html"
   },
   "dependencies": {
     "@simplewebauthn/browser": "14.0.0",

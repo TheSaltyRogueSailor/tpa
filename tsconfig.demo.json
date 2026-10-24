@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "rootDir": ".",
+    "outDir": "./.demo-build"
+  },
+  "include": ["src/**/*.ts", "tests/support/authenticator.ts", "scripts/redteam-demo.ts", "scripts/demo/**/*.ts"],
+  "exclude": ["node_modules", "dist", "ledger", ".demo-build"]
+}
