@@ -114,7 +114,11 @@ All money is an integer count of base units (cents for USD) carried as a string.
 pnpm install --frozen-lockfile
 pnpm demo                 # colored terminal output (FORCE_COLOR=1 pnpm demo if your shell sets NO_COLOR)
 pnpm demo:html            # also writes examples/redteam-demo.html for screen recording
+pnpm demo:animated        # writes examples/redteam-demo.json and the auto-playing examples/redteam-demo-animated.html
+pnpm demo:video           # records that page to artifacts/tpa-demo.mp4 (1920x1080, H.264, yuv420p)
 ```
+
+The animated page embeds the JSON from the same run, so it only ever shows real outcomes and reason codes. It is self-contained (no network or CDN). `scripts/record-demo-video.mjs` needs no npm packages: it drives the system Chrome/Chromium headless over the DevTools protocol, steps the page clock frame by frame (`window.__tpa.render(ms)`) and pipes the frames into `ffmpeg`, so the video is smooth however slow capture is. Set `CHROME_PATH` if Chrome is not in a standard location; `ffmpeg` must be on `PATH`.
 
 `scripts/redteam-demo.ts` drives the real `createTpaService` with a real Ed25519 signer (key generated in memory, never printed) and the synthetic WebAuthn authenticator from `tests/support/authenticator.ts`. It needs no database and no network. Persistence is a demo-only in-memory port of the store and evidence rules (`scripts/demo/memory-store.ts`); production uses the MySQL store. It runs one legit checkout (allowed) and then blocks these five attack types, printing each reason code and the audit log:
 

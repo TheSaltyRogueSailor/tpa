@@ -1,0 +1,765 @@
+{
+  "generatedAt": "2026-10-24T18:12:07.379Z",
+  "source": "pnpm demo (scripts/redteam-demo.ts): local, in-memory run of the real TPA service",
+  "approvedCart": {
+    "merchant": "Acme Store",
+    "currency": "USD",
+    "items": [
+      {
+        "sku": "MUG-01",
+        "qty": 2,
+        "unitPrice": "$7.50"
+      },
+      {
+        "sku": "TEE-02",
+        "qty": 1,
+        "unitPrice": "$15.00"
+      }
+    ],
+    "shipping": "$5.00",
+    "tax": "$2.80",
+    "total": "$37.80"
+  },
+  "summary": {
+    "allowed": 1,
+    "blocked": 11,
+    "attackTypes": 5,
+    "allAsExpected": true
+  },
+  "cases": [
+    {
+      "id": "control",
+      "group": "Case 0",
+      "title": "Agent checks out the exact cart the owner approved",
+      "story": "Agent shops, server signs the mandate, owner approves with passkey, merchant charges the same cart.",
+      "outcome": "ALLOWED",
+      "code": "ALLOWED",
+      "meaning": "checkout matched the signed, passkey-approved mandate",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "id": "merchant-swap",
+      "group": "Attack 1",
+      "title": "Swapped merchant",
+      "story": "Owner approved Acme Store; the checkout that shows up is from Evil Store.",
+      "outcome": "BLOCKED",
+      "code": "terms_changed:merchant_mismatch",
+      "meaning": "a different store than the one the owner approved",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Evil Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        6,
+        7,
+        8
+      ]
+    },
+    {
+      "id": "price-raised",
+      "group": "Attack 1",
+      "title": "Price raised on an item",
+      "story": "Mug price quietly raised from $7.50 to $17.50 (total recomputed to $57.80).",
+      "outcome": "BLOCKED",
+      "code": "terms_changed:items_mismatch",
+      "meaning": "the items or prices differ from what the owner approved",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$17.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$57.80"
+      },
+      "auditIds": [
+        9
+      ]
+    },
+    {
+      "id": "total-inflated",
+      "group": "Attack 1",
+      "title": "Total inflated",
+      "story": "Same items, but the total charged is $97.80 instead of $37.80.",
+      "outcome": "BLOCKED",
+      "code": "terms_changed:checkout_total_inconsistent",
+      "meaning": "the total does not add up from the approved items, shipping and tax",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$97.80"
+      },
+      "auditIds": [
+        10
+      ]
+    },
+    {
+      "id": "replay",
+      "group": "Attack 2",
+      "title": "Replay the already-paid Case 0 mandate",
+      "story": "Agent tries to charge the same approved cart a second time.",
+      "outcome": "BLOCKED",
+      "code": "intent",
+      "meaning": "the approval cannot be used: already used, never approved, expired or revoked",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        11,
+        12
+      ]
+    },
+    {
+      "id": "forged-signature",
+      "group": "Attack 3",
+      "title": "Forged server signature",
+      "story": "Attacker re-signs the mandate with their own key under the real key id.",
+      "outcome": "BLOCKED",
+      "code": "mandate_signature_invalid:bad_signature",
+      "meaning": "the server's signature on the mandate does not verify",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        13,
+        14,
+        15
+      ]
+    },
+    {
+      "id": "tampered-mandate",
+      "group": "Attack 3",
+      "title": "Tampered mandate in storage",
+      "story": "Attacker edits the stored mandate to pay Evil Store and recomputes its hash.",
+      "outcome": "BLOCKED",
+      "code": "mandate_signature_invalid:hash_mismatch",
+      "meaning": "the mandate was altered after the server signed it",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Evil Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        16,
+        17,
+        18
+      ]
+    },
+    {
+      "id": "no-passkey",
+      "group": "Attack 4",
+      "title": "No passkey approval at all",
+      "story": "Agent creates a $1353.92 laptop mandate and tries to pay without the owner approving.",
+      "outcome": "BLOCKED",
+      "code": "intent",
+      "meaning": "the approval cannot be used: already used, never approved, expired or revoked",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "LAPTOP-15",
+            "qty": 1,
+            "unitPrice": "$1249.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$99.92",
+        "total": "$1353.92"
+      },
+      "auditIds": [
+        19,
+        20,
+        21
+      ]
+    },
+    {
+      "id": "passkey-other-mandate",
+      "group": "Attack 4",
+      "title": "Passkey approval for a different mandate",
+      "story": "Owner approves a $37.81 mug order; the agent submits that passkey signature for the laptop instead.",
+      "outcome": "BLOCKED",
+      "code": "ceremony",
+      "meaning": "the passkey signature was not made for this purchase",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "LAPTOP-15",
+            "qty": 1,
+            "unitPrice": "$1249.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$99.92",
+        "total": "$1353.92"
+      },
+      "auditIds": [
+        22,
+        23
+      ]
+    },
+    {
+      "id": "passkey-unbound",
+      "group": "Attack 4",
+      "title": "Passkey prompt not tied to the mandate",
+      "story": "Owner is tricked into a generic sign-in style passkey prompt; it is used to approve the laptop.",
+      "outcome": "BLOCKED",
+      "code": "challenge_unbound",
+      "meaning": "the passkey prompt was not tied to this purchase's mandate",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "LAPTOP-15",
+            "qty": 1,
+            "unitPrice": "$1249.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$99.93",
+        "total": "$1353.93"
+      },
+      "auditIds": [
+        24,
+        25
+      ]
+    },
+    {
+      "id": "expired",
+      "group": "Attack 5",
+      "title": "Expired mandate",
+      "story": "Approved mandate is used after its 5 minute lifetime (simulated clock +5m01s).",
+      "outcome": "BLOCKED",
+      "code": "intent",
+      "meaning": "the approval cannot be used: already used, never approved, expired or revoked",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        26,
+        27,
+        28,
+        29
+      ]
+    },
+    {
+      "id": "revoked",
+      "group": "Attack 5",
+      "title": "Revoked mandate",
+      "story": "Owner approves, then changes their mind and revokes; the agent tries to pay anyway.",
+      "outcome": "BLOCKED",
+      "code": "intent",
+      "meaning": "the approval cannot be used: already used, never approved, expired or revoked",
+      "asExpected": true,
+      "checkout": {
+        "merchant": "Acme Store",
+        "currency": "USD",
+        "items": [
+          {
+            "sku": "MUG-01",
+            "qty": 2,
+            "unitPrice": "$7.50"
+          },
+          {
+            "sku": "TEE-02",
+            "qty": 1,
+            "unitPrice": "$15.00"
+          }
+        ],
+        "shipping": "$5.00",
+        "tax": "$2.80",
+        "total": "$37.80"
+      },
+      "auditIds": [
+        30,
+        31,
+        32,
+        33,
+        34
+      ]
+    }
+  ],
+  "trailingAuditIds": [],
+  "audit": [
+    {
+      "id": 1,
+      "time": "18:12:07",
+      "action": "credential_registered",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "-",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 2,
+      "time": "18:12:07",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "9d06a163",
+      "mandate": "70a02b4e27",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 3,
+      "time": "18:12:09",
+      "action": "authorized",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "9d06a163",
+      "mandate": "70a02b4e27",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 4,
+      "time": "18:12:11",
+      "action": "consume",
+      "outcome": "attempt",
+      "reasonCode": "pending",
+      "intent": "9d06a163",
+      "mandate": "70a02b4e27",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 5,
+      "time": "18:12:11",
+      "action": "consumed",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "9d06a163",
+      "mandate": "70a02b4e27",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 6,
+      "time": "18:12:11",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "281c5c7d",
+      "mandate": "fb3dd84d30",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 7,
+      "time": "18:12:11",
+      "action": "authorized",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "281c5c7d",
+      "mandate": "fb3dd84d30",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 8,
+      "time": "18:12:12",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "terms_changed:merchant_mismatch",
+      "intent": "281c5c7d",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 9,
+      "time": "18:12:12",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "terms_changed:items_mismatch",
+      "intent": "281c5c7d",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 10,
+      "time": "18:12:12",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "terms_changed:checkout_total_inconsistent",
+      "intent": "281c5c7d",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 11,
+      "time": "18:12:13",
+      "action": "consume",
+      "outcome": "attempt",
+      "reasonCode": "pending",
+      "intent": "9d06a163",
+      "mandate": "70a02b4e27",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 12,
+      "time": "18:12:13",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "intent",
+      "intent": "9d06a163",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 13,
+      "time": "18:12:13",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "b3d8974d",
+      "mandate": "64e23749a3",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 14,
+      "time": "18:12:13",
+      "action": "authorized",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "b3d8974d",
+      "mandate": "64e23749a3",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 15,
+      "time": "18:12:14",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "mandate_signature_invalid:bad_signature",
+      "intent": "b3d8974d",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 16,
+      "time": "18:12:14",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "594d0632",
+      "mandate": "fa21936da9",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 17,
+      "time": "18:12:14",
+      "action": "authorized",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "594d0632",
+      "mandate": "fa21936da9",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 18,
+      "time": "18:12:15",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "mandate_signature_invalid:hash_mismatch",
+      "intent": "594d0632",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 19,
+      "time": "18:12:15",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "c26f6af8",
+      "mandate": "05740621bb",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 20,
+      "time": "18:12:15",
+      "action": "consume",
+      "outcome": "attempt",
+      "reasonCode": "pending",
+      "intent": "c26f6af8",
+      "mandate": "05740621bb",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 21,
+      "time": "18:12:15",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "intent",
+      "intent": "c26f6af8",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 22,
+      "time": "18:12:15",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "68d15dc0",
+      "mandate": "e40e8fde29",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 23,
+      "time": "18:12:15",
+      "action": "authorize",
+      "outcome": "refused",
+      "reasonCode": "ceremony",
+      "intent": "c26f6af8",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 24,
+      "time": "18:12:15",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "60fa92d7",
+      "mandate": "67bd3b9bdd",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 25,
+      "time": "18:12:15",
+      "action": "authorize",
+      "outcome": "refused",
+      "reasonCode": "challenge_unbound",
+      "intent": "60fa92d7",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 26,
+      "time": "18:12:15",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "ef3ae18c",
+      "mandate": "f0384adb8b",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 27,
+      "time": "18:12:15",
+      "action": "authorized",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "ef3ae18c",
+      "mandate": "f0384adb8b",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 28,
+      "time": "18:17:16",
+      "action": "consume",
+      "outcome": "attempt",
+      "reasonCode": "pending",
+      "intent": "ef3ae18c",
+      "mandate": "f0384adb8b",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 29,
+      "time": "18:17:16",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "intent",
+      "intent": "ef3ae18c",
+      "mandate": "-",
+      "keyId": "-"
+    },
+    {
+      "id": 30,
+      "time": "18:17:16",
+      "action": "intent_created",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "8c851cba",
+      "mandate": "dc9a88afae",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 31,
+      "time": "18:17:16",
+      "action": "authorized",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "8c851cba",
+      "mandate": "dc9a88afae",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 32,
+      "time": "18:17:16",
+      "action": "revoked",
+      "outcome": "approved",
+      "reasonCode": "ok",
+      "intent": "8c851cba",
+      "mandate": "dc9a88afae",
+      "keyId": "-"
+    },
+    {
+      "id": 33,
+      "time": "18:17:17",
+      "action": "consume",
+      "outcome": "attempt",
+      "reasonCode": "pending",
+      "intent": "8c851cba",
+      "mandate": "dc9a88afae",
+      "keyId": "tpa-demo-key-1"
+    },
+    {
+      "id": 34,
+      "time": "18:17:17",
+      "action": "consume",
+      "outcome": "refused",
+      "reasonCode": "intent",
+      "intent": "8c851cba",
+      "mandate": "-",
+      "keyId": "-"
+    }
+  ]
+}

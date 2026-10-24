@@ -12,7 +12,7 @@
  *   pnpm demo -- --html <file>     # also write a static HTML report of this run
  */
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createTpaAuthority } from "../src/config.js";
 import { canonicalTpaMandate, formatBaseUnits, type TpaCheckoutInput } from "../src/domain.js";
 import { createTpaService, TpaServiceError } from "../src/service.js";
@@ -64,10 +64,12 @@ async function ownerApprovesWithPasskey(intentId: string) {
   const assertion = phone.assert(started.options.challenge);
   return service.authorize(ctx, { intentId, ceremonyId: started.ceremonyId, response: assertion, consent: true });
 }
-const merchantCharges = (intentId: string, checkout: TpaCheckoutInput) => service.consume(ctx, { intentId, consent: true, checkout });
+/** The checkout most recently submitted to the merchant step, recorded for the JSON / animated output. */
+let lastCheckout: TpaCheckoutInput | undefined;
+const merchantCharges = (intentId: string, checkout: TpaCheckoutInput) => { lastCheckout = checkout; return service.consume(ctx, { intentId, consent: true, checkout }); };
 
 /* ------------------------------ case runner ------------------------------ */
-type Result = { group: string; title: string; story: string; expected: string; outcome: "ALLOWED" | "BLOCKED"; code: string; meaning: string; asExpected: boolean; intentId?: string };
+type Result = { id: string; group: string; title: string; story: string; expected: string; outcome: "ALLOWED" | "BLOCKED"; code: string; meaning: string; asExpected: boolean; intentId?: string; checkout?: TpaCheckoutInput };
 const results: Result[] = [];
 const MEANING: Record<string, string> = {
   ALLOWED: "checkout matched the signed, passkey-approved mandate",
@@ -82,12 +84,13 @@ const MEANING: Record<string, string> = {
 };
 const codeOf = (error: unknown) => (error instanceof TpaServiceError ? (error.reason ? `${error.code}:${error.reason}` : error.code) : `unexpected:${String(error)}`);
 
-async function runCase(group: string, title: string, story: string, expected: string, attempt: () => Promise<unknown>, intentId?: string) {
+async function runCase(caseId: string, group: string, title: string, story: string, expected: string, attempt: () => Promise<unknown>, intentId?: string, shown?: TpaCheckoutInput) {
   let outcome: Result["outcome"], code: string;
   const id = intentId;
+  lastCheckout = undefined;
   try { await attempt(); outcome = "ALLOWED"; code = "ALLOWED"; }
   catch (error) { outcome = "BLOCKED"; code = codeOf(error); }
-  const result: Result = { group, title, story, expected, outcome, code, meaning: MEANING[code] ?? "unexpected result", asExpected: code === expected, intentId: id };
+  const result: Result = { id: caseId, group, title, story, expected, outcome, code, meaning: MEANING[code] ?? "unexpected result", asExpected: code === expected, intentId: id, checkout: shown ?? lastCheckout };
   results.push(result);
   const badge = outcome === "ALLOWED" ? green("  ALLOWED ") : red("  BLOCKED ");
   say(`${badge} ${bold(title)}`);
@@ -99,8 +102,10 @@ const section = (title: string) => { say(cyan(`== ${title} ==`)); say(); };
 
 /* ---------------------------------- run ---------------------------------- */
 async function main() {
-  const htmlIndex = process.argv.indexOf("--html");
-  const htmlPath = htmlIndex > 0 ? process.argv[htmlIndex + 1] : undefined;
+  const argValue = (flag: string) => { const index = process.argv.indexOf(flag); return index > 0 ? process.argv[index + 1] : undefined; };
+  const htmlPath = argValue("--html");
+  const jsonPath = argValue("--json");
+  const animatedPath = argValue("--animated");
 
   say(cyan("=================================================================="));
   say(cyan("   TPA: Triple Protection Authentication") + dim("   red-team demo"));
@@ -125,7 +130,7 @@ async function main() {
   tick(2_000);
   await ownerApprovesWithPasskey(legit.id);
   tick(2_000);
-  await runCase("Case 0", "Agent checks out the exact cart the owner approved", "Agent shops, server signs the mandate, owner approves with passkey, merchant charges the same cart.", "ALLOWED",
+  await runCase("control", "Case 0", "Agent checks out the exact cart the owner approved", "Agent shops, server signs the mandate, owner approves with passkey, merchant charges the same cart.", "ALLOWED",
     () => merchantCharges(legit.id, CART), legit.id);
 
   /* Attack 1: terms changed at checkout */
@@ -133,17 +138,17 @@ async function main() {
   const a1 = await agentRequestsMandate(CART);
   await ownerApprovesWithPasskey(a1.id);
   tick(1_000);
-  await runCase("Attack 1", "Swapped merchant", "Owner approved Acme Store; the checkout that shows up is from Evil Store.", "terms_changed:merchant_mismatch",
+  await runCase("merchant-swap", "Attack 1", "Swapped merchant", "Owner approved Acme Store; the checkout that shows up is from Evil Store.", "terms_changed:merchant_mismatch",
     () => merchantCharges(a1.id, { ...CART, merchant: { id: "evil-store", name: "Evil Store" } }), a1.id);
-  await runCase("Attack 1", "Price raised on an item", "Mug price quietly raised from $7.50 to $17.50 (total recomputed to $57.80).", "terms_changed:items_mismatch",
+  await runCase("price-raised", "Attack 1", "Price raised on an item", "Mug price quietly raised from $7.50 to $17.50 (total recomputed to $57.80).", "terms_changed:items_mismatch",
     () => merchantCharges(a1.id, { ...CART, items: [{ sku: "MUG-01", qty: 2, unitPriceBaseUnits: "1750" }, CART.items[1]!], totalBaseUnits: "5780" }), a1.id);
-  await runCase("Attack 1", "Total inflated", "Same items, but the total charged is $97.80 instead of $37.80.", "terms_changed:checkout_total_inconsistent",
+  await runCase("total-inflated", "Attack 1", "Total inflated", "Same items, but the total charged is $97.80 instead of $37.80.", "terms_changed:checkout_total_inconsistent",
     () => merchantCharges(a1.id, { ...CART, totalBaseUnits: "9780" }), a1.id);
 
   /* Attack 2: replay */
   section("Attack 2: replaying a used approval");
   tick(1_000);
-  await runCase("Attack 2", "Replay the already-paid Case 0 mandate", "Agent tries to charge the same approved cart a second time.", "intent",
+  await runCase("replay", "Attack 2", "Replay the already-paid Case 0 mandate", "Agent tries to charge the same approved cart a second time.", "intent",
     () => merchantCharges(legit.id, CART), legit.id);
 
   /* Attack 3: forged or tampered mandate */
@@ -154,7 +159,7 @@ async function main() {
   const stored = memory.tamper.signatures.get(a3.id)!;
   memory.tamper.signatures.set(a3.id, { ...stored, ...attackerKey.sign(canonicalTpaMandate(a3.mandate)) });
   tick(1_000);
-  await runCase("Attack 3", "Forged server signature", "Attacker re-signs the mandate with their own key under the real key id.", "mandate_signature_invalid:bad_signature",
+  await runCase("forged-signature", "Attack 3", "Forged server signature", "Attacker re-signs the mandate with their own key under the real key id.", "mandate_signature_invalid:bad_signature",
     () => merchantCharges(a3.id, CART), a3.id);
 
   const a3b = await agentRequestsMandate(CART);
@@ -165,42 +170,43 @@ async function main() {
   row.mandateJson = JSON.stringify(rewritten);
   row.mandateHash = createHash("sha256").update(canonicalTpaMandate(rewritten)).digest("hex");
   tick(1_000);
-  await runCase("Attack 3", "Tampered mandate in storage", "Attacker edits the stored mandate to pay Evil Store and recomputes its hash.", "mandate_signature_invalid:hash_mismatch",
+  await runCase("tampered-mandate", "Attack 3", "Tampered mandate in storage", "Attacker edits the stored mandate to pay Evil Store and recomputes its hash.", "mandate_signature_invalid:hash_mismatch",
     () => merchantCharges(a3b.id, evilCart), a3b.id);
 
   /* Attack 4: no passkey, or the wrong passkey approval */
   section("Attack 4: skipping or reusing the passkey approval");
   const a4 = await agentRequestsMandate(LAPTOP);
-  await runCase("Attack 4", "No passkey approval at all", `Agent creates a ${usd(LAPTOP.totalBaseUnits)} laptop mandate and tries to pay without the owner approving.`, "intent",
+  await runCase("no-passkey", "Attack 4", "No passkey approval at all", `Agent creates a ${usd(LAPTOP.totalBaseUnits)} laptop mandate and tries to pay without the owner approving.`, "intent",
     () => merchantCharges(a4.id, LAPTOP), a4.id);
 
   const small = await agentRequestsMandate({ ...CART, taxBaseUnits: "281", totalBaseUnits: "3781" });
   const smallPrompt = await service.authenticationOptions(ctx, { intentId: small.id, consent: true });
   const ownersSignatureForSmall = phone.assert(smallPrompt.options.challenge);
   const laptopPrompt = await service.authenticationOptions(ctx, { intentId: a4.id, consent: true });
-  await runCase("Attack 4", "Passkey approval for a different mandate", "Owner approves a $37.81 mug order; the agent submits that passkey signature for the laptop instead.", "ceremony",
-    () => service.authorize(ctx, { intentId: a4.id, ceremonyId: laptopPrompt.ceremonyId, response: ownersSignatureForSmall, consent: true }), a4.id);
+  await runCase("passkey-other-mandate", "Attack 4", "Passkey approval for a different mandate", "Owner approves a $37.81 mug order; the agent submits that passkey signature for the laptop instead.", "ceremony",
+    () => service.authorize(ctx, { intentId: a4.id, ceremonyId: laptopPrompt.ceremonyId, response: ownersSignatureForSmall, consent: true }), a4.id, LAPTOP);
 
-  const a4c = await agentRequestsMandate({ ...LAPTOP, taxBaseUnits: "9993", totalBaseUnits: "135393" });
+  const laptopC: TpaCheckoutInput = { ...LAPTOP, taxBaseUnits: "9993", totalBaseUnits: "135393" };
+  const a4c = await agentRequestsMandate(laptopC);
   const unboundCeremony = randomBytes(32).toString("hex");
   const genericChallenge = randomBytes(32).toString("base64url");
   await memory.store.startAuthorization({ userId: owner.principalId, sessionHash: owner.sessionHash, origin: ORIGIN, ceremonyId: unboundCeremony, challenge: genericChallenge, intentId: a4c.id, now: now() });
-  await runCase("Attack 4", "Passkey prompt not tied to the mandate", "Owner is tricked into a generic sign-in style passkey prompt; it is used to approve the laptop.", "challenge_unbound",
-    () => service.authorize(ctx, { intentId: a4c.id, ceremonyId: unboundCeremony, response: phone.assert(genericChallenge), consent: true }), a4c.id);
+  await runCase("passkey-unbound", "Attack 4", "Passkey prompt not tied to the mandate", "Owner is tricked into a generic sign-in style passkey prompt; it is used to approve the laptop.", "challenge_unbound",
+    () => service.authorize(ctx, { intentId: a4c.id, ceremonyId: unboundCeremony, response: phone.assert(genericChallenge), consent: true }), a4c.id, laptopC);
 
   /* Attack 5: expired and revoked */
   section("Attack 5: using an expired or revoked approval");
   const a5 = await agentRequestsMandate(CART);
   await ownerApprovesWithPasskey(a5.id);
   tick(301_000);
-  await runCase("Attack 5", "Expired mandate", "Approved mandate is used after its 5 minute lifetime (simulated clock +5m01s).", "intent",
+  await runCase("expired", "Attack 5", "Expired mandate", "Approved mandate is used after its 5 minute lifetime (simulated clock +5m01s).", "intent",
     () => merchantCharges(a5.id, CART), a5.id);
 
   const a5b = await agentRequestsMandate(CART);
   await ownerApprovesWithPasskey(a5b.id);
   await service.revoke(ctx, { intentId: a5b.id, consent: true });
   tick(1_000);
-  await runCase("Attack 5", "Revoked mandate", "Owner approves, then changes their mind and revokes; the agent tries to pay anyway.", "intent",
+  await runCase("revoked", "Attack 5", "Revoked mandate", "Owner approves, then changes their mind and revokes; the agent tries to pay anyway.", "intent",
     () => merchantCharges(a5b.id, CART), a5b.id);
 
   /* --------------------------- audit log --------------------------- */
@@ -238,7 +244,49 @@ async function main() {
   say(cyan("=================================================================="));
 
   if (htmlPath) { writeFileSync(htmlPath, renderHtml(results, audit, { allowed, blocked, ok, generatedAt: new Date().toISOString() })); say(dim(`HTML report written to ${htmlPath}`)); }
+  if (jsonPath || animatedPath) {
+    const data = buildRunData(results, audit, { allowed, blocked, ok });
+    if (jsonPath) { writeFileSync(jsonPath, `${JSON.stringify(data, null, 2)}\n`); say(dim(`JSON results written to ${jsonPath}`)); }
+    if (animatedPath) { writeFileSync(animatedPath, renderAnimatedHtml(data)); say(dim(`Animated page written to ${animatedPath}`)); }
+  }
   if (!ok) process.exitCode = 1;
+}
+
+/* ------------------------- JSON + animated page ------------------------- */
+type AuditEntry = { id: number; atMs: number; action: string; outcome: string; reasonCode: string; intentId: string | null; mandateHash?: string | null; keyId?: string | null };
+/**
+ * Machine-readable copy of this run: every case with its real outcome and reason code, the checkout
+ * that was submitted, and the audit rows it produced. Audit rows only (no signatures, challenges or keys).
+ */
+function buildRunData(rows: Result[], audit: AuditEntry[], meta: { allowed: number; blocked: number; ok: boolean }) {
+  const cart = (c?: TpaCheckoutInput) => c && ({
+    merchant: c.merchant.name, currency: c.currency,
+    items: c.items.map(i => ({ sku: i.sku, qty: i.qty, unitPrice: usd(i.unitPriceBaseUnits) })),
+    shipping: usd(c.shipping.costBaseUnits), tax: usd(c.taxBaseUnits), total: usd(c.totalBaseUnits),
+  });
+  // Attach each audit row to the case it belongs to: everything up to and including that case's decisive row.
+  let cursor = 0;
+  const cases = rows.map(r => {
+    const decisive = r.outcome === "ALLOWED" ? (a: AuditEntry) => a.action === "consumed" && a.intentId === r.intentId
+      : (a: AuditEntry) => a.outcome === "refused" && a.intentId === r.intentId && a.reasonCode === r.code;
+    const found = audit.findIndex((a, index) => index >= cursor && decisive(a));
+    const end = found >= 0 ? found + 1 : cursor;
+    const auditIds = audit.slice(cursor, end).map(a => a.id);
+    cursor = end;
+    return { id: r.id, group: r.group, title: r.title, story: r.story, outcome: r.outcome, code: r.code, meaning: r.meaning, asExpected: r.asExpected, checkout: cart(r.checkout), auditIds };
+  });
+  return {
+    generatedAt: new Date().toISOString(), source: "pnpm demo (scripts/redteam-demo.ts): local, in-memory run of the real TPA service",
+    approvedCart: cart(CART), summary: { allowed: meta.allowed, blocked: meta.blocked, attackTypes: new Set(rows.filter(r => r.outcome === "BLOCKED").map(r => r.group)).size, allAsExpected: meta.ok },
+    cases, trailingAuditIds: audit.slice(cursor).map(a => a.id),
+    audit: audit.map(a => ({ id: a.id, time: new Date(a.atMs).toISOString().slice(11, 19), action: a.action, outcome: a.outcome, reasonCode: a.reasonCode, intent: (a.intentId ?? "-").slice(0, 8), mandate: (a.mandateHash ?? "-").slice(0, 10), keyId: a.keyId ?? "-" })),
+  };
+}
+/** Embeds the run data into scripts/demo/animated-page.html (self-contained, no network). */
+function renderAnimatedHtml(data: ReturnType<typeof buildRunData>) {
+  const template = readFileSync(new URL("../../scripts/demo/animated-page.html", import.meta.url), "utf8");
+  const json = JSON.stringify(data).replace(/</g, "\\u003c");
+  return template.replace("/*__TPA_DEMO_DATA__*/null", () => json);
 }
 
 /* ------------------------------ HTML report ------------------------------ */

@@ -25,7 +25,9 @@
     "sync:lifecycle-store": "node scripts/sync-lifecycle-store.mjs",
     "audit:runtime": "pnpm audit --prod",
     "demo": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js",
-    "demo:html": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js --html examples/redteam-demo.html"
+    "demo:html": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js --html examples/redteam-demo.html",
+    "demo:animated": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js --json examples/redteam-demo.json --animated examples/redteam-demo-animated.html",
+    "demo:video": "pnpm demo:animated && node scripts/record-demo-video.mjs examples/redteam-demo-animated.html artifacts/tpa-demo.mp4"
   },
   "dependencies": {
     "@simplewebauthn/browser": "14.0.0",

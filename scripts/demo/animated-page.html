@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TPA: Triple Protection Authentication - animated red-team demo</title>
+<!--
+  Animated TPA red-team demo. Self-contained: no network, no CDN, no images fetched.
+  The data below is embedded by `pnpm demo:animated` from a real local run of scripts/redteam-demo.ts,
+  so the animation always shows the real outcomes and reason codes.
+  Every frame is a pure function of time: window.__tpa.render(ms). Add ?record to disable autoplay
+  (used by scripts/record-demo-video.mjs to step the clock frame by frame).
+-->
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#05080d;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#e6edf3}
+#stage{position:relative;width:1280px;height:720px;flex:none;overflow:hidden;background:radial-gradient(1200px 700px at 30% 0%,#13202f 0%,#0b1119 55%,#070b11 100%);transform-origin:center center}
+.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
+/* top bar */
+#top{position:absolute;left:0;top:0;width:1280px;height:64px;display:flex;align-items:center;padding:0 40px;gap:14px;border-bottom:1px solid #1d2733;background:#0a1018cc}
+#top .name{font-weight:800;font-size:19px;letter-spacing:.01em}
+#top .name span{color:#8b98a8;font-weight:500}
+#grp{margin-left:auto;font-size:14px;color:#9fb0c3;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+#dots{display:flex;gap:7px;margin-left:22px}
+#dots i{width:12px;height:12px;border-radius:50%;background:#253243;display:block}
+#dots i.ok{background:#2ea043}#dots i.no{background:#e5484d}#dots i.cur{box-shadow:0 0 0 3px #ffffff40}
+/* caption */
+#cap{position:absolute;left:40px;top:82px;width:780px;height:112px}
+#cap .k{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#ff7b72}
+#cap .k.ok{color:#3fb950}
+#cap .t{font-size:29px;font-weight:800;line-height:1.15;margin-top:6px}
+#cap .s{font-size:15px;color:#9fb0c3;margin-top:7px}
+/* shop window */
+#win{position:absolute;left:40px;top:206px;width:780px;height:484px;border-radius:14px;background:#fff;color:#1b2430;overflow:hidden;box-shadow:0 20px 60px #0009,0 0 0 1px #ffffff14}
+#win .bar{height:36px;background:#e9edf2;display:flex;align-items:center;padding:0 14px;gap:7px}
+#win .bar i{width:11px;height:11px;border-radius:50%;display:block}
+#win .url{margin-left:14px;flex:1;height:22px;border-radius:6px;background:#fff;font-size:12px;color:#5b6675;display:flex;align-items:center;padding:0 10px}
+#win .shop{height:50px;display:flex;align-items:center;padding:0 26px;border-bottom:1px solid #e6e9ee}
+#win .brand{font-weight:800;font-size:20px;color:#1b2430}
+#win .brand b{color:#2ea043}
+#win .secure{margin-left:auto;font-size:13px;color:#5b6675}
+#co{padding:14px 26px 0}
+.row{display:flex;align-items:center;font-size:15px;height:30px}
+.row .l{flex:1;color:#3a4553}.row .r{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.row.m{height:36px;font-size:15px;border-bottom:1px solid #eef0f3;margin-bottom:6px}
+.row.item{height:36px}
+.row.item .q{width:48px;color:#5b6675}.row.item .sku{font-size:11px;color:#8792a2;margin-left:8px}
+.row.sm{height:25px;font-size:14px}.row.sm .l{color:#5b6675}
+.row.tot{height:38px;font-size:18px;font-weight:800;border-top:1px solid #e6e9ee;margin-top:4px}
+.row.tot .l{color:#1b2430}
+.chg{background:#ffe1df;color:#c62828;border-radius:5px;padding:1px 6px}
+.old{color:#9aa3ae;text-decoration:line-through;font-weight:500;margin-right:8px;font-size:13px}
+#pay{position:absolute;left:26px;top:350px;width:300px;height:48px;border-radius:10px;background:#1b2430;color:#fff;font-weight:700;font-size:17px;display:flex;align-items:center;justify-content:center}
+#mand{position:absolute;left:346px;top:344px;width:408px;height:120px;border-radius:10px;background:#f4f7fa;border:1px solid #e2e7ed;padding:10px 14px;font-size:12.5px;color:#3a4553}
+#mand .h{font-weight:800;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#2ea043;display:flex;align-items:center;gap:6px}
+#mand .ln{margin-top:5px;display:flex;gap:6px}#mand .ln b{color:#1b2430;min-width:68px;font-weight:700}
+#mand .note{margin-top:6px;color:#c62828;font-weight:700}
+/* passkey sheet */
+#sheet{position:absolute;left:250px;top:300px;width:320px;height:300px;border-radius:22px;background:#fff;color:#1b2430;box-shadow:0 30px 80px #000a,0 0 0 1px #0000000f;padding:22px;text-align:center}
+#sheet .tt{font-weight:800;font-size:18px;margin-top:6px}#sheet .st{font-size:14px;color:#5b6675;margin-top:4px}
+#sheet .fp{width:84px;height:84px;margin:16px auto 8px;position:relative}
+#sheet .dev{font-size:13px;color:#5b6675}
+#sheet .okk{font-weight:800;color:#2ea043;font-size:16px;margin-top:6px}
+/* stamp */
+#stamp{position:absolute;left:40px;top:206px;width:780px;height:484px;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
+#stamp .bg{position:absolute;inset:0;border-radius:14px}
+#stamp .word{position:relative;font-size:96px;font-weight:900;letter-spacing:.05em;padding:0 30px;border:9px solid;border-radius:18px;line-height:1.15;background:#ffffffee}
+#stamp .why{position:relative;margin-top:22px;font-size:22px;font-weight:700;background:#0d1117ee;color:#fff;padding:10px 18px;border-radius:10px;max-width:700px;text-align:center}
+#stamp .code{position:relative;margin-top:10px;font-size:14px;background:#0d1117dd;color:#c9d1d9;padding:5px 12px;border-radius:7px}
+/* audit panel */
+#aud{position:absolute;left:850px;top:82px;width:390px;height:608px;border-radius:14px;background:#0d141d;border:1px solid #1f2a37;overflow:hidden}
+#aud .hd{height:52px;padding:0 16px;display:flex;align-items:center;border-bottom:1px solid #1f2a37}
+#aud .hd b{font-size:15px}#aud .hd span{margin-left:auto;font-size:12px;color:#8b98a8}
+#rows{position:absolute;left:0;top:52px;width:390px;height:556px;overflow:hidden}
+.ar{position:absolute;left:10px;width:370px;height:42px;border-radius:8px;background:#121b26;border:1px solid #1c2734;padding:5px 10px;font-size:12px}
+.ar .a{display:flex;align-items:center;gap:8px}.ar .n{color:#6e7b8b;width:22px}.ar .act{font-weight:700;color:#d5dde6}
+.ar .pill{margin-left:auto;font-size:11px;font-weight:800;padding:1px 7px;border-radius:5px;text-transform:uppercase;letter-spacing:.04em}
+.ar.approved .pill{background:#2ea04333;color:#3fb950}.ar.refused .pill{background:#e5484d33;color:#ff7b72}.ar.attempt .pill{background:#30363d;color:#9fb0c3}
+.ar .b{margin-top:3px;color:#8b98a8;font-size:11px;white-space:nowrap;overflow:hidden}
+.ar.refused{border-color:#e5484d66;background:#2a1517}.ar.refused .b{color:#ff9d97}
+.ar.approved.key{border-color:#2ea04388;background:#13281a}
+/* cursor */
+#cur{position:absolute;left:0;top:0;width:120px;height:60px;pointer-events:none}
+#cur .lab{position:absolute;left:22px;top:26px;background:#7c3aed;color:#fff;font-size:12px;font-weight:800;padding:3px 8px;border-radius:6px;white-space:nowrap}
+#ripple{position:absolute;width:20px;height:20px;border-radius:50%;border:3px solid #7c3aed;pointer-events:none}
+/* cards */
+.card{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:radial-gradient(900px 600px at 50% 35%,#13241b 0%,#0a1018 60%,#06090e 100%)}
+.card h1{font-size:64px;font-weight:900;margin:18px 0 0;letter-spacing:.01em}
+.card h2{font-size:30px;font-weight:700;margin:6px 0 0;color:#cfe8d6}
+.card .pl{display:flex;gap:18px;margin-top:34px}
+.card .pl div{width:300px;background:#101a25;border:1px solid #233142;border-radius:14px;padding:16px;font-size:17px;color:#c9d1d9;text-align:left}
+.card .pl b{display:block;color:#3fb950;font-size:14px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+.card .ft{position:absolute;bottom:30px;font-size:14px;color:#7d8a99}
+.card .big{font-size:40px;font-weight:900;line-height:1.3;max-width:1100px}
+.card .big .g{color:#3fb950}.card .big .r{color:#ff6b6b}
+.card .types{margin-top:24px;font-size:15px;color:#9fb0c3;max-width:1220px;line-height:1.5}
+</style></head>
+<body>
+<div id="stage">
+  <div id="top">
+    <svg width="34" height="38" viewBox="0 0 34 38" aria-hidden="true"><use href="#logo"/></svg>
+    <div class="name">TPA <span>Triple Protection Authentication</span></div>
+    <div id="grp"></div><div id="dots"></div>
+  </div>
+  <div id="cap"><div class="k"></div><div class="t"></div><div class="s"></div></div>
+  <div id="win">
+    <div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><div class="url mono">https://demo-shop.example/checkout</div></div>
+    <div class="shop"><div class="brand">Demo <b>Shop</b></div><div class="secure">Checkout by an AI shopping agent</div></div>
+    <div id="co"></div>
+    <div id="pay">Pay</div>
+    <div id="mand"></div>
+  </div>
+  <div id="sheet"></div>
+  <div id="stamp"><div class="bg"></div><div class="word"></div><div class="why"></div><div class="code mono"></div></div>
+  <div id="aud"><div class="hd"><b>TPA audit log</b><span>every approval and refusal</span></div><div id="rows"></div></div>
+  <div id="ripple"></div>
+  <div id="cur"><svg width="26" height="34" viewBox="0 0 26 34"><path d="M2 2 L2 28 L9 21 L14 32 L19 30 L14 19 L24 19 Z" fill="#fff" stroke="#111" stroke-width="2" stroke-linejoin="round"/></svg><div class="lab">AI agent</div></div>
+  <div class="card" id="intro"></div>
+  <div class="card" id="end"></div>
+</div>
+<svg width="0" height="0" style="position:absolute"><defs>
+  <symbol id="logo" viewBox="0 0 34 38">
+    <path d="M15 2 L28 7 V17 C28 26 22 32 15 35 C8 32 2 26 2 17 V7 Z" fill="#2ea043"/>
+    <path d="M15 5 L25 9 V17 C25 24 20.5 29 15 31.5 Z" fill="#3fb950" opacity=".55"/>
+    <path d="M9 18 L13.5 22.5 L21.5 13.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M27 3 C24 3 22.6 5.4 22.6 8 V11 L21 13 H33 L31.4 11 V8 C31.4 5.4 30 3 27 3 Z" fill="#e5484d" stroke="#0a1018" stroke-width="1.2"/>
+    <circle cx="27" cy="14.6" r="1.6" fill="#e5484d"/>
+  </symbol>
+</defs></svg>
+<script>
+"use strict";
+const DATA = /*__TPA_DEMO_DATA__*/null;
+(function () {
+  const $ = (s, el = document) => el.querySelector(s);
+  const esc = v => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const prog = (t, a, b) => clamp((t - a) / (b - a));
+  const eo = x => 1 - Math.pow(1 - x, 3);
+  const eio = x => (x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const lerp = (a, b, x) => a + (b - a) * x;
+  const money = s => Number(String(s).replace(/[^0-9.]/g, ""));
+  const fmt = n => "$" + n.toFixed(2); // same format as the demo script
+  const NAMES = { "MUG-01": "Coffee mug", "TEE-02": "T-shirt", "LAPTOP-15": "15 inch laptop" };
+  const GROUPS = { "Case 0": "Control: a legit checkout", "Attack 1": "Changing the deal at checkout", "Attack 2": "Replaying a used approval", "Attack 3": "Forging or tampering with the mandate", "Attack 4": "Skipping or reusing the passkey", "Attack 5": "Expired or revoked approval" };
+  const cap1 = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+  if (!DATA) { document.body.innerHTML = '<p style="padding:40px">No demo data embedded. Run <code>pnpm demo:animated</code>.</p>'; return; }
+  const approved = DATA.approvedCart;
+  const auditById = new Map(DATA.audit.map(a => [a.id, a]));
+  const groupsAttack = [...new Set(DATA.cases.filter(c => c.outcome === "BLOCKED").map(c => c.group))];
+
+  /* Plain-English captions and mandate notes. Dollar amounts come from the run data. */
+  const PRESENT = {
+    control: c => ({ cap: "A legit checkout: the agent buys exactly the cart the owner wants", passkey: "approved on Raul's phone", note: "" }),
+    "merchant-swap": c => ({ cap: `Attacker swaps the store to ${c.checkout.merchant}`, passkey: "approved on Raul's phone", note: `Owner approved: ${approved.merchant}, ${approved.total}` }),
+    "price-raised": c => ({ cap: `Attacker raises the mug price from ${approved.items[0].unitPrice} to ${c.checkout.items[0].unitPrice}`, passkey: "approved on Raul's phone", note: `Owner approved: ${approved.merchant}, ${approved.total}` }),
+    "total-inflated": c => ({ cap: `Attacker inflates the total to ${c.checkout.total}`, passkey: "approved on Raul's phone", note: `Owner approved: ${approved.merchant}, ${approved.total}` }),
+    replay: c => ({ cap: "Attacker replays the approval that was already paid", passkey: "approved, already used once", note: "This mandate was already paid in the legit checkout" }),
+    "forged-signature": c => ({ cap: "Attacker forges the server's signature with their own key", passkey: "approved on Raul's phone", note: "Signature replaced: attacker key under the real key id" }),
+    "tampered-mandate": c => ({ cap: `Attacker edits the stored mandate to pay ${c.checkout.merchant}`, passkey: "approved on Raul's phone", note: "Stored mandate edited after signing, hash recomputed" }),
+    "no-passkey": c => ({ cap: `Agent tries a ${c.checkout.total} laptop with no owner approval`, passkey: "none, owner never approved", note: "No passkey approval for this mandate" }),
+    "passkey-other-mandate": c => ({ cap: "Attacker reuses the owner's passkey from a different order", passkey: "signature from a $37.81 mug order", note: "Passkey was made for another purchase" }),
+    "passkey-unbound": c => ({ cap: "Owner is tricked into a generic sign-in passkey prompt", passkey: "from a generic sign-in prompt", note: "Prompt was not tied to this mandate" }),
+    expired: c => ({ cap: "Agent pays with an approval after it expired", passkey: "approved 5 min 01 s ago", note: "Mandate lifetime is 5 minutes" }),
+    revoked: c => ({ cap: "Agent pays with an approval the owner revoked", passkey: "approved, then revoked by owner", note: "Owner revoked this approval" }),
+  };
+
+  /* ------------------------------- timeline ------------------------------- */
+  const INTRO = 4200, END = 7500, CTRL = 9200, ATT = 5600;
+  const segs = []; let at = INTRO;
+  const rowTimes = new Map(); // audit id -> ms when it slides in
+  DATA.cases.forEach((c, index) => {
+    const ctrl = c.outcome === "ALLOWED";
+    const dur = ctrl ? CTRL : ATT;
+    const T = ctrl ? { flip: 0, move: [700, 1700], click: 1800, sheet: [2100, 4700], press: [2900, 3700], ok: 3800, check: [4800, 5300], stamp: 5400, hold: dur - 450 }
+                   : { flip: 900, move: [1000, 2250], click: 2350, check: [2450, 2950], stamp: 3000, hold: dur - 400 };
+    const p = (PRESENT[c.id] || (() => ({ cap: c.title, passkey: "", note: "" })))(c);
+    const seg = { c, index, start: at, dur, T, p, ctrl };
+    segs.push(seg);
+    // audit rows of this case: setup rows early, the consume attempt at the click, the decisive row with the stamp
+    const ids = c.auditIds, decisive = ids[ids.length - 1];
+    const setup = ids.filter(id => id !== decisive && !(auditById.get(id).action === "consume" && auditById.get(id).outcome === "attempt"));
+    if (ctrl) {
+      const byAction = { credential_registered: 400, intent_created: 1950, authorized: T.ok };
+      setup.forEach((id, k) => rowTimes.set(id, at + (byAction[auditById.get(id).action] ?? 400 + 300 * k)));
+    } else setup.forEach((id, k) => rowTimes.set(id, at + 450 + k * (setup.length > 1 ? 900 / (setup.length - 1) : 0)));
+    ids.forEach(id => { if (id !== decisive && !rowTimes.has(id)) rowTimes.set(id, at + (ctrl ? T.check[0] : T.click + 120)); });
+    rowTimes.set(decisive, at + T.stamp + 150);
+    at += dur;
+  });
+  DATA.trailingAuditIds.forEach(id => rowTimes.set(id, at));
+  const ENDSTART = at, TOTAL = at + END;
+
+  /* ------------------------------ static DOM ------------------------------ */
+  $("#dots").innerHTML = DATA.cases.map(() => "<i></i>").join("");
+  const dots = [...document.querySelectorAll("#dots i")];
+  const rowsEl = $("#rows");
+  const rowEls = DATA.audit.map(a => {
+    const el = document.createElement("div");
+    el.className = `ar ${a.outcome}${a.action === "consumed" ? " key" : ""}`;
+    el.innerHTML = `<div class="a"><span class="n mono">#${a.id}</span><span class="act mono">${esc(a.action)}</span><span class="pill">${esc(a.outcome)}</span></div>` +
+      `<div class="b mono">${esc(a.reasonCode)}${a.outcome === "refused" ? "" : `  ·  intent ${esc(a.intent)}  ·  ${esc(a.time)}`}</div>`;
+    el.style.opacity = "0"; rowsEl.appendChild(el); return { a, el, t: rowTimes.get(a.id) ?? Infinity };
+  });
+  const s = DATA.summary;
+  $("#intro").innerHTML = `<svg width="120" height="134" viewBox="0 0 34 38"><use href="#logo"/></svg><h1>TPA</h1><h2>Triple Protection Authentication</h2>
+    <div class="pl"><div><b>1. Signed mandate</b>The server signs the exact checkout the agent built.</div><div><b>2. Passkey approval</b>The owner approves that exact mandate with a passkey.</div><div><b>3. Exact match, once</b>At payment the checkout must match it, and works once.</div></div>
+    <div class="ft">Red-team demo: ${s.allowed} legit checkout, then ${s.blocked} attacks. Real results from a local run of the TPA service.</div>`;
+  $("#end").innerHTML = `<svg width="96" height="108" viewBox="0 0 34 38"><use href="#logo"/></svg>
+    <div class="big" style="margin-top:18px"><span class="g">${s.allowed} legit checkout allowed.</span><br><span class="r">${s.blocked} attacks blocked across ${s.attackTypes} attack types.</span></div>
+    <div class="types">${groupsAttack.map(g => esc(GROUPS[g] || g)).join("  ·  ")}</div>
+    <h2 style="margin-top:34px;color:#fff">TPA: Triple Protection Authentication</h2>
+    <div class="ft">Generated from a local, in-memory run of the real TPA service (pnpm demo) on ${esc(DATA.generatedAt.slice(0, 10))}. Pilot scope: TPA authorizes checkouts; it does not move money.</div>`;
+
+  /* --------------------------- per-case content --------------------------- */
+  const sameSkus = co => co.items.length === approved.items.length && co.items.every((it, i) => it.sku === approved.items[i].sku);
+  function cartHtml(co, flipped) {
+    const base = sameSkus(co) ? approved : null;
+    const show = !flipped && base ? base : co;
+    const diff = (a, b) => flipped && base && a !== b;
+    const val = (now, before) => diff(now, before) ? `<span class="old">${esc(before)}</span><span class="chg">${esc(now)}</span>` : esc(now);
+    let sub = 0;
+    const items = show.items.map((it, i) => {
+      const line = money(it.unitPrice) * it.qty; sub += line;
+      const before = base ? base.items[i] : null;
+      const lineBefore = before ? fmt(money(before.unitPrice) * before.qty) : null;
+      return `<div class="row item"><span class="q">${it.qty} x</span><span class="l">${esc(NAMES[it.sku] || it.sku)} <span class="sku mono">${esc(it.sku)}</span> <span style="color:#8792a2;font-size:13px">@ ${val(it.unitPrice, before && before.unitPrice)}</span></span><span class="r">${val(fmt(line), lineBefore)}</span></div>`;
+    }).join("");
+    return `<div class="row m"><span class="l">Sold by</span><span class="r">${val(show.merchant, base && base.merchant)}</span></div>${items}
+      <div class="row sm"><span class="l">Subtotal</span><span class="r">${fmt(sub)}</span></div>
+      <div class="row sm"><span class="l">Shipping</span><span class="r">${esc(show.shipping)}</span></div>
+      <div class="row sm"><span class="l">Tax</span><span class="r">${esc(show.tax)}</span></div>
+      <div class="row tot"><span class="l">Total</span><span class="r">${val(show.total, base && base.total)}</span></div>`;
+  }
+  // The mandate a case targets: the decisive audit row's intent, looked up in any row that carries its mandate hash.
+  const mandateOf = c => { const d = auditById.get(c.auditIds[c.auditIds.length - 1]); return d && DATA.audit.find(a => a.intent === d.intent && a.mandate !== "-") || null; };
+  function mandHtml(seg, passkeyText) {
+    const m = mandateOf(seg.c);
+    return `<div class="h"><svg width="14" height="16" viewBox="0 0 34 38"><use href="#logo"/></svg>TPA signed mandate</div>
+      <div class="ln"><b>Mandate</b><span class="mono">${esc(m ? m.mandate : "-")}...</span></div>
+      <div class="ln"><b>Signed by</b><span class="mono">${esc(m ? m.keyId : "-")}</span></div>
+      <div class="ln"><b>Passkey</b><span>${esc(passkeyText)}</span></div>
+      ${seg.p.note ? `<div class="note">${esc(seg.p.note)}</div>` : ""}`;
+  }
+  function sheetHtml(seg, fill, done) {
+    const co = seg.c.checkout, m = mandateOf(seg.c);
+    const r = 34, circ = 2 * Math.PI * r;
+    return `<svg width="30" height="34" viewBox="0 0 34 38"><use href="#logo"/></svg>
+      <div class="tt">Approve this purchase?</div><div class="st">${esc(co.merchant)}  ·  <b>${esc(co.total)}</b><br><span class="mono" style="font-size:12px">mandate ${esc(m ? m.mandate : "")}</span></div>
+      <div class="fp"><svg width="84" height="84" viewBox="0 0 84 84"><circle cx="42" cy="42" r="${r}" fill="none" stroke="#e6e9ee" stroke-width="6"/>
+        <circle cx="42" cy="42" r="${r}" fill="none" stroke="#2ea043" stroke-width="6" stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${circ * (1 - fill)}" transform="rotate(-90 42 42)"/>
+        ${done ? '<path d="M28 43 L38 53 L57 32" fill="none" stroke="#2ea043" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>'
+               : '<g fill="none" stroke="#5b6675" stroke-width="2.6" stroke-linecap="round"><path d="M30 46 C30 34 54 34 54 46"/><path d="M35 54 C35 40 49 40 49 54"/><path d="M42 44 L42 58"/><path d="M26 38 C32 26 52 26 58 38"/></g>'}</svg></div>
+      ${done ? '<div class="okk">Approved with passkey</div>' : '<div class="dev">Owner confirms on Raul\'s phone</div>'}`;
+  }
+
+  /* --------------------------------- render --------------------------------- */
+  const cache = {};
+  const put = (el, key, html) => { if (cache[key] !== html) { cache[key] = html; el.innerHTML = html; } };
+  const st = (el, css) => { for (const k in css) el.style[k] = css[k]; };
+  const stage = $("#stage"), cur = $("#cur"), rip = $("#ripple"), pay = $("#pay"), sheet = $("#sheet"), stamp = $("#stamp");
+  const REST = { x: 700, y: 640 };
+  function payCenter() { return { x: 40 + 26 + 150, y: 206 + 350 + 26 }; }
+
+  function render(ms) {
+    const t = clamp(ms, 0, TOTAL - 1);
+    // intro / end cards
+    const introA = 1 - prog(t, INTRO - 500, INTRO);
+    st($("#intro"), { opacity: introA, display: introA > 0 ? "flex" : "none", transform: `scale(${lerp(1.04, 1, eo(prog(t, 0, 900)))})` });
+    $("#intro").style.filter = `blur(${(1 - prog(t, 0, 600)) * 6}px)`;
+    const endA = prog(t, ENDSTART, ENDSTART + 600);
+    st($("#end"), { opacity: endA, display: endA > 0 ? "flex" : "none" });
+    st($("#end .big"), { transform: `translateY(${(1 - eo(prog(t, ENDSTART + 200, ENDSTART + 1000))) * 30}px)` });
+
+    const seg = segs.find(sg => t >= sg.start && t < sg.start + sg.dur) || (t < INTRO ? segs[0] : segs[segs.length - 1]);
+    const lt = t - seg.start, T = seg.T, c = seg.c;
+    // top bar
+    put($("#grp"), "grp", `${esc(c.group)}  ·  ${esc(GROUPS[c.group] || "")}`);
+    dots.forEach((d, i) => { const sg = segs[i]; const done = t >= sg.start + sg.T.stamp; d.className = (done ? (sg.ctrl ? "ok" : "no") : "") + (i === seg.index ? " cur" : ""); });
+    // caption
+    const capIn = eo(prog(lt, 0, 500)), capOut = prog(lt, seg.dur - 300, seg.dur);
+    put($("#cap"), "cap", `<div class="k ${seg.ctrl ? "ok" : ""}">${seg.ctrl ? "Control case" : esc(c.group) + " · " + esc(c.title)}</div><div class="t">${esc(seg.p.cap)}</div><div class="s">${esc(c.story)}</div>`);
+    st($("#cap"), { opacity: capIn * (1 - capOut), transform: `translateY(${(1 - capIn) * 16}px)` });
+    // checkout
+    const flipped = lt >= T.flip;
+    put($("#co"), "co", cartHtml(c.checkout, flipped));
+    const flash = !seg.ctrl && flipped ? Math.max(0, 1 - (lt - T.flip) / 700) : 0;
+    document.querySelectorAll("#co .chg").forEach(el => { el.style.boxShadow = `0 0 0 ${4 * flash}px #ff5a5066`; });
+    let passkeyText = seg.p.passkey;
+    if (seg.ctrl) passkeyText = lt < T.ok ? "waiting for the owner" : seg.p.passkey;
+    put($("#mand"), "mand", mandHtml(seg, passkeyText));
+    // pay button
+    const pressed = lt >= T.click && lt < T.click + 160;
+    const checking = lt >= T.check[0] && lt < T.stamp;
+    const waitingPasskey = seg.ctrl && lt >= T.click && lt < T.check[0];
+    const shownTotal = !flipped && sameSkus(c.checkout) ? approved.total : c.checkout.total;
+    put(pay, "pay", checking ? "Checking with TPA..." : waitingPasskey ? "Waiting for passkey..." : `Pay ${esc(shownTotal)}`);
+    st(pay, { transform: `scale(${pressed ? .96 : 1})`, background: checking || waitingPasskey ? "#3b4757" : "#1b2430" });
+    // cursor
+    const pc = payCenter(); const mv = eio(prog(lt, T.move[0], T.move[1]));
+    const leave = seg.ctrl ? eio(prog(lt, T.click + 250, T.click + 900)) : eio(prog(lt, T.stamp + 600, T.stamp + 1400));
+    let x = lerp(REST.x, pc.x + 30, mv), y = lerp(REST.y, pc.y, mv);
+    x = lerp(x, REST.x, leave); y = lerp(y, REST.y, leave);
+    const cs = lt >= T.click - 60 && lt < T.click + 140 ? .85 : 1;
+    st(cur, { transform: `translate(${x}px,${y}px) scale(${cs})`, opacity: String(1 - prog(lt, seg.dur - 300, seg.dur) * 0.0) });
+    const rp = prog(lt, T.click, T.click + 500);
+    st(rip, { left: `${pc.x + 30 - 10}px`, top: `${pc.y - 10}px`, opacity: rp > 0 && rp < 1 ? String(1 - rp) : "0", transform: `scale(${1 + rp * 3})` });
+    // passkey sheet (control)
+    if (seg.ctrl && lt >= T.sheet[0] && lt < T.sheet[1]) {
+      const fill = eio(prog(lt, T.press[0], T.press[1])), done = lt >= T.ok;
+      put(sheet, "sheet", sheetHtml(seg, fill, done));
+      const sin = eo(prog(lt, T.sheet[0], T.sheet[0] + 400)), sout = prog(lt, T.sheet[1] - 300, T.sheet[1]);
+      st(sheet, { display: "block", opacity: String(sin * (1 - sout)), transform: `translateY(${(1 - sin) * 60 + sout * 30}px)` });
+    } else sheet.style.display = "none";
+    // stamp
+    if (lt >= T.stamp) {
+      const k = prog(lt, T.stamp, T.stamp + 260), out = prog(lt, T.hold, seg.dur);
+      const ok = c.outcome === "ALLOWED", col = ok ? "#1f9d3a" : "#d32f2f";
+      put(stamp, "stamp", `<div class="bg"></div><div class="word">${ok ? "APPROVED" : "DENIED"}</div>
+        <div class="why">${ok ? "Checkout matched the signed, passkey-approved mandate" : "Blocked: " + esc(c.meaning)}</div>
+        <div class="code mono">${ok ? `result: ALLOWED  ·  ${esc(c.checkout.total)} at ${esc(c.checkout.merchant)}` : "reason code: " + esc(c.code)}</div>`);
+      st(stamp, { display: "flex", opacity: String(1 - out) });
+      st($("#stamp .bg"), { background: ok ? "#0d3b1a99" : "#3b0d0d99", opacity: String(k) });
+      st($("#stamp .word"), { color: col, borderColor: col, opacity: String(k), transform: `rotate(${ok ? -4 : -8}deg) scale(${lerp(1.8, 1, eo(k))})` });
+      const w = prog(lt, T.stamp + 250, T.stamp + 600);
+      st($("#stamp .why"), { opacity: String(w), transform: `translateY(${(1 - eo(w)) * 14}px)` });
+      st($("#stamp .code"), { opacity: String(prog(lt, T.stamp + 400, T.stamp + 750)) });
+    } else stamp.style.display = "none";
+    // audit rows: newest on top; each row pushes older rows down as it slides in
+    const H = 47, SLIDE = 420;
+    const live = rowEls.filter(r => t >= r.t).sort((a, b) => b.t - a.t || b.a.id - a.a.id);
+    let offset = 0;
+    rowEls.forEach(r => { if (t < r.t) r.el.style.opacity = "0"; });
+    live.forEach(r => {
+      const p = eo(prog(t, r.t, r.t + SLIDE));
+      const y = 8 + offset;
+      if (y + 44 > 552) { r.el.style.opacity = "0"; } else st(r.el, { opacity: String(p), transform: `translate(${(1 - p) * 60}px,${y}px)` });
+      offset += H * p;
+    });
+  }
+
+  /* -------------------------------- playback -------------------------------- */
+  function fit() { const k = Math.min(innerWidth / 1280, innerHeight / 720); stage.style.transform = `scale(${k})`; }
+  addEventListener("resize", fit); fit();
+  window.__tpa = { duration: TOTAL, render, data: DATA };
+  render(0);
+  if (!/[?&]record\b/.test(location.search)) {
+    let t0 = null;
+    const loop = now => { if (t0 === null) t0 = now; render((now - t0) % (TOTAL + 1500)); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  }
+})();
+</script>
+</body></html>
