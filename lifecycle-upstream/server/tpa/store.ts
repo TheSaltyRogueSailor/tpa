@@ -623,6 +623,9 @@ export async function consumeIntent(input: { userId: number; sessionHash: string
       await lockOwner(tx, input.userId);
       const intentRow = await lockedIntent(tx, input.intentId);
       const intent = assertBoundIntent(intentRow, input.userId, input.sessionHash, input.origin);
+      // A pending, consumed, or revoked intent is an ordinary refusal, not a data-integrity fault.
+      // Only an "authorized" row without its credential binding is an integrity fault.
+      if (intent.state !== "authorized") throw new TpaStoreError("intent");
       if (!intent.authorizedCredentialIdHash) throw new TpaStoreError("integrity");
       const credential = await lockedCredential(tx, intent.authorizedCredentialIdHash);
       const current = nowMs(input.now);
