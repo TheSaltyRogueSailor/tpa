@@ -1,5 +1,6 @@
 export * from "./config.js";
 export * from "./domain.js";
+export * from "./evidence.js";
 export * from "./dogecoin.js";
 export * from "./host/contracts.js";
 export * from "./host/minimal-owner.js";
@@ -8,5 +9,6 @@ export * from "./mysql.js";
 export * from "./review.js";
 export * from "./schema.js";
 export * from "./service.js";
+export * from "./signing.js";
 export * from "./store.js";
 export * from "./webauthn.js";

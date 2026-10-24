@@ -64,4 +64,44 @@ export const tpaCeremonies = mysqlTable("tpa_ceremonies", {
   userCreatedIndex: index("tpa_ceremony_user_created_idx").on(table.userId, table.createdAtMs),
 }));
 
-export const tpaSchema = { tpaPrincipals, tpaCredentials, tpaIntents, tpaCeremonies };
+/** Server Ed25519 signature over each intent's canonical mandate (migration 0001). */
+export const tpaMandateSignatures = mysqlTable("tpa_mandate_signatures", {
+  intentId: varchar("intentId", { length: 64 }).primaryKey(),
+  userId: bigint("userId", { mode: "number" }).notNull(),
+  mandateHash: varchar("mandateHash", { length: 64 }).notNull(),
+  keyId: varchar("keyId", { length: 64 }).notNull(),
+  algorithm: varchar("algorithm", { length: 16 }).notNull(),
+  signature: varchar("signature", { length: 128 }).notNull(),
+  createdAtMs: bigint("createdAtMs", { mode: "number" }).notNull(),
+});
+
+/** Binds each authorization ceremony's WebAuthn challenge to a mandate: challenge = SHA-256(mandateHash || bindingNonce). */
+export const tpaChallengeBindings = mysqlTable("tpa_challenge_bindings", {
+  ceremonyId: varchar("ceremonyId", { length: 64 }).primaryKey(),
+  userId: bigint("userId", { mode: "number" }).notNull(),
+  intentId: varchar("intentId", { length: 64 }).notNull(),
+  mandateHash: varchar("mandateHash", { length: 64 }).notNull(),
+  bindingNonce: varchar("bindingNonce", { length: 64 }).notNull(),
+  challenge: varchar("challenge", { length: 128 }).notNull(),
+  createdAtMs: bigint("createdAtMs", { mode: "number" }).notNull(),
+}, table => ({
+  intentIndex: index("tpa_challenge_binding_intent_idx").on(table.intentId),
+}));
+
+/** Append-only approval/refusal audit trail. Holds no session hashes, challenges, keys or signatures. */
+export const tpaAuditEvents = mysqlTable("tpa_audit_events", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  userId: bigint("userId", { mode: "number" }),
+  intentId: varchar("intentId", { length: 64 }),
+  action: varchar("action", { length: 32 }).notNull(),
+  outcome: mysqlEnum("outcome", ["approved", "refused", "attempt"]).notNull(),
+  reasonCode: varchar("reasonCode", { length: 48 }).notNull(),
+  mandateHash: varchar("mandateHash", { length: 64 }),
+  keyId: varchar("keyId", { length: 64 }),
+  atMs: bigint("atMs", { mode: "number" }).notNull(),
+}, table => ({
+  userTimeIndex: index("tpa_audit_user_time_idx").on(table.userId, table.atMs),
+  intentIndex: index("tpa_audit_intent_idx").on(table.intentId),
+}));
+
+export const tpaSchema = { tpaPrincipals, tpaCredentials, tpaIntents, tpaCeremonies, tpaMandateSignatures, tpaChallengeBindings, tpaAuditEvents };

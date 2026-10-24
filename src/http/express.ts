@@ -34,6 +34,7 @@ export function createTpaExpressRouter(service: TpaService, resolveAuthenticated
   };
 
   router.get("/status", respond(async request => service.status(await context(request))));
+  router.get("/audit", respond(async request => service.auditLog(await context(request), { intentId: typeof request.query.intentId === "string" ? request.query.intentId : undefined })));
   router.post("/registration/options", respond(async request => service.registrationOptions(await context(request), request.body)));
   router.post("/registration/verify", respond(async request => service.registrationVerify(await context(request), request.body)));
   router.post("/intents", respond(async request => service.createIntent(await context(request), request.body)));
@@ -49,8 +50,8 @@ export function createTpaExpressRouter(service: TpaService, resolveAuthenticated
 
 function sendError(response: Response, error: unknown): void {
   if (error instanceof TpaServiceError) {
-    const status = error.code === "unauthenticated" ? 401 : error.code === "forbidden" ? 403 : error.code === "rate" ? 429 : error.code === "invalid" ? 400 : error.code === "unavailable" ? 503 : 412;
-    response.status(status).json({ error: error.message, code: error.code });
+    const status = error.code === "unauthenticated" ? 401 : error.code === "forbidden" ? 403 : error.code === "rate" ? 429 : error.code === "invalid" ? 400 : error.code === "unavailable" ? 503 : error.code === "terms_changed" ? 409 : 412;
+    response.status(status).json({ error: error.message, code: error.code, ...(error.reason ? { reason: error.reason } : {}) });
     return;
   }
   // Zod and malformed JSON details are not reflected to a credential endpoint.

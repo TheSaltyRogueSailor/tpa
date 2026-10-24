@@ -1,5 +1,5 @@
 import express from "express";
-import { createMinimalOwnerAdapter, createTpaAuthority, createTpaExpressRouter, createTpaMySqlConnection, createTpaService, createTpaStore, type TpaAuthenticatedOwner } from "../src/index.js";
+import { createMinimalOwnerAdapter, createTpaAuthority, createTpaExpressRouter, createTpaMySqlConnection, createTpaEvidenceStore, createTpaService, createTpaStore, tpaMandateSignerFromEnv, type TpaAuthenticatedOwner } from "../src/index.js";
 
 export type ReferenceTpaApp = { app: express.Express; close: () => Promise<void> };
 
@@ -22,7 +22,11 @@ export function createReferenceTpaApp(resolveHostSession: (request: express.Requ
   const connection = createTpaMySqlConnection(url);
   const adapter = createMinimalOwnerAdapter(async () => connection.db);
   const store = createTpaStore(adapter);
-  const service = createTpaService({ store, authority });
+  // Mandate signing key comes from the deployment secret store (see .env.example and
+  // scripts/generate-mandate-signing-key.mjs). Without it, checkout mandates are refused.
+  const signer = tpaMandateSignerFromEnv(process.env);
+  if (!signer) throw new Error("Set TPA_MANDATE_SIGNING_KEY_ID and TPA_MANDATE_SIGNING_KEY in the deployment secret store before mounting TPA.");
+  const service = createTpaService({ store, authority, signer, evidence: createTpaEvidenceStore(adapter) });
   const app = express();
   app.disable("x-powered-by");
   // This includes its own bounded JSON parser and generic parser-error handler.
