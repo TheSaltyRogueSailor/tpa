@@ -12,6 +12,17 @@ Tests ran locally on Node 22.13.0 and pnpm 10.18.0. Use a maintained Node 22 LTS
 
 A five-area review of the parent TPA implementation informed trusted-time/post-lock expiry, nonce/hash replay, one-time registration completion, session-rotation recovery, encoded private-document and stale-review fixes. The parent implementation passed 560 non-SMTP application tests across 100 files, types, build, frozen installation and production audit. Its external SMTP authentication test remains explicitly excluded. That parent result does not replace the artifact-specific standalone checks above.
 
+## Mandate hardening validation (2026-10-24, local branch lumi/mandate-hardening)
+
+`pnpm check`, `pnpm build` and `pnpm test` passed with **100 tests across 8 files**. That includes the opt-in database suites, which were run against a disposable local MariaDB 11.8 schema (`TPA_TEST_DATABASE_URL`). Without a database, 31 tests run and 69 are skipped. The ledger still passes its **20 tests**. The new database suites cover:
+
+- exact checkout matching (items added, swapped, removed, re-priced, or changed in quantity; shipping; tax; total; merchant; payee);
+- Ed25519 mandate signatures (tampered, missing, unknown key id, impostor key under a known id, rotation, consistent database rewrite);
+- binding of the passkey challenge to the mandate;
+- audit rows for approvals and refusals.
+
+These are local results and were not run on MySQL 8 or in remote CI.
+
 ## Remaining acceptance requirements
 
 The integrating host must supply and validate real authenticated sessions, owner designation, bans/disablement, session revocation, transactional principal locks and exact HTTPS/RP configuration. Real device/browser-origin staging, real MySQL concurrent-operation/restart acceptance, backup/restore drills, independent penetration/security review and purchaser legal/IP review remain required. Local tests are not bank certification, independent face liveness or proof of assets/settlement. No perfect-code or guaranteed-fraud-prevention claim is made.

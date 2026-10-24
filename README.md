@@ -11,6 +11,8 @@ The independently tested source checkpoint is documented in [VALIDATION.md](VALI
 | Path | Purpose |
 | --- | --- |
 | `src/domain.ts` | Immutable mandate schema, canonicalization, exact base-unit helpers, and explicit pilot boundary. |
+| `src/signing.ts` | Ed25519 mandate signer/verifier with key ids for rotation; loads keys from environment. |
+| `src/evidence.ts` | Signature, passkey challenge binding, and audit-log persistence; challenge derivation. |
 | `src/webauthn.ts` | Bounded WebAuthn request parsers plus registration/authentication options and verification wrappers. |
 | `src/store.ts` | MySQL/Drizzle persistence with owner locks, ceremony burn/claim, intent replay defenses, counters, session/origin bindings, and recovery rules. |
 | `src/host/contracts.ts` | Required host database and owner-authorization contract. |
@@ -87,6 +89,24 @@ Registration and authorization ceremonies are short-lived, one-use server record
 The store takes the host owner lock first, then rechecks trusted time after lock waits. Intent creation rejects a repeated canonical mandate and a reused nonce. It accepts authenticator counters that remain `0` for standards-compatible authenticators, but once either old or new counter is nonzero it requires advancement. The service validates WebAuthn user verification, exact challenge, exact origin, exact RP ID, user-handle binding when supplied, and bounded browser payload shapes.
 
 A returned `authorized` or `consumed` intent is authorization evidence only. It does not debit an account, move money, sign a chain transaction, contact a payment processor, validate balances, establish legal consent, or prove a real-world identity.
+
+## Checkout mandate hardening (mandate version 3.0)
+
+New intents are checkout mandates. Besides owner, currency, payee account, nonce and a 300 second expiry, the canonical mandate binds:
+
+- the merchant id and display name;
+- the line items as `[sku, qty, unitPriceBaseUnits]`, sorted by SKU, one line per SKU;
+- the shipping method and shipping cost;
+- the subtotal, the tax and the total, where subtotal = sum(qty x unit price) and total = subtotal + shipping + tax.
+
+All money is an integer count of base units (cents for USD) carried as a string. Floats, exponents and inconsistent totals are refused.
+
+- **Server signature.** The server signs `TPA-MANDATE-SIG/1\n<keyId>\n<canonical mandate>` with an Ed25519 key that is loaded from `TPA_MANDATE_SIGNING_KEY`. The key id comes from `TPA_MANDATE_SIGNING_KEY_ID`. Retired public keys go in `TPA_MANDATE_VERIFY_KEYS` to support rotation. The signature is checked on status reads, before the passkey step, after it, and at consume. A missing or unknown-key signature, or one that does not verify, is refused with `mandate_signature_invalid`. Create a key with `node scripts/generate-mandate-signing-key.mjs <keyId> <output-file>` and keep it in a secret manager. No real key is committed.
+- **Passkey bound to the mandate.** The WebAuthn challenge is `base64url(SHA-256(mandateHash || bindingNonce))`, using a fresh 32-byte nonce per ceremony. The server re-derives the challenge before it accepts an assertion. Any other challenge is refused with `challenge_unbound`. The browser reference recomputes the challenge before it asks the passkey.
+- **Exact match at use time.** `consume` must receive the actual `checkout`. Any difference in merchant, payee, currency, items, shipping, tax or total is refused with `terms_changed` (HTTP 409) and a specific `reason`, such as `items_mismatch`. A refused attempt does not use up the authorization.
+- **Audit log.** `tpa_audit_events` records approvals (`intent_created`, `authorized`, `consumed`, `revoked`, credential changes), consume attempts, and every refusal. Each row holds a reason code and a timestamp. It holds no session hashes, challenges, nonces, signatures or keys. The owner can read it with `service.auditLog()` / `GET /audit`.
+- **Migration.** Apply `migrations/0001_tpa_mandate_hardening.sql` after `0000`. It only adds tables.
+- **Legacy.** The 2.0 amount-and-recipient transfer mandate is refused unless `legacyTransferMandates: true`.
 
 ## Browser reference
 
