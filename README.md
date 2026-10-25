@@ -1,6 +1,6 @@
-# TPA Authorization Pilot — standalone library
+# TPA Authorization Pilot: standalone library
 
-This is a reusable, framework-neutral **authorization-evidence pilot**. It creates canonical single-use transfer-authorization mandates, binds a passkey/WebAuthn ceremony to a host-authenticated owner, and persists credential and intent state with MySQL row locking. It is not a payment service, bank integration, custody system, blockchain signing service, wallet, transfer executor, settlement engine, identity proofing service, or independent liveness system.
+This is a reusable, framework-neutral **authorization-evidence pilot**. It creates canonical single-use checkout mandates (mandate version 3.0) that bind the merchant, line items, shipping, tax and total, signs each one with a server Ed25519 key, binds the passkey/WebAuthn challenge to that exact mandate for a host-authenticated owner, refuses use unless the checkout presented at consume matches exactly, records approvals and refusals in an audit log, and persists credential, intent and evidence state with MySQL row locking. It is not a payment service, bank integration, custody system, blockchain signing service, wallet, transfer executor, settlement engine, identity proofing service, or independent liveness system.
 
 `TPA_MODE` is intentionally explicit: `paymentExecution: false`, `onChainSubmission: false`, `independentLiveness: "not-configured"`, and `identityClaim: "registered-credential-control"`.
 
@@ -10,7 +10,8 @@ The independently tested source checkpoint is documented in [VALIDATION.md](VALI
 
 | Path | Purpose |
 | --- | --- |
-| `src/domain.ts` | Immutable mandate schema, canonicalization, exact base-unit helpers, and explicit pilot boundary. |
+| `src/domain.ts` | Immutable mandate schemas (3.0 checkout and legacy 2.0 transfer), canonicalization, checkout comparison, exact base-unit helpers, and explicit pilot boundary. |
+| `src/config.ts` | Exact HTTPS origin and RP ID authority; fails closed when either is absent or inconsistent. |
 | `src/signing.ts` | Ed25519 mandate signer/verifier with key ids for rotation; loads keys from environment. |
 | `src/evidence.ts` | Signature, passkey challenge binding, and audit-log persistence; challenge derivation. |
 | `src/webauthn.ts` | Bounded WebAuthn request parsers plus registration/authentication options and verification wrappers. |
@@ -19,11 +20,14 @@ The independently tested source checkpoint is documented in [VALIDATION.md](VALI
 | `src/host/minimal-owner.ts` | Working adapter for the included minimal `tpa_principals` table. |
 | `src/service.ts` | Framework-neutral service that accepts only caller-provided, host-authenticated owner identity. |
 | `src/http/express.ts` | Working bounded Express router factory that requires a host identity resolver. |
-| `src/schema.ts`, `migrations/0000_tpa_standalone.sql` | The only extracted data schema: minimal principal contract, credentials, intents, and ceremonies. |
+| `src/schema.ts`, `migrations/0000_tpa_standalone.sql` | Base data schema: minimal principal contract, credentials, intents, and ceremonies. |
+| `migrations/0001_tpa_mandate_hardening.sql` | Adds the mandate signature, challenge binding, and audit event tables. Apply after `0000`. |
 | `client-reference/tpa-client.ts` | Optional compile-tested browser reference using SimpleWebAuthn without a social application UI. |
 | `examples/express-host.ts` | Reference host mount showing explicit configuration and host-session seam. It intentionally does not start a server. |
+| `scripts/generate-mandate-signing-key.mjs` | Generates an Ed25519 mandate signing key into a 0600 file and prints only the key id and public key. |
 | `scripts/sync-lifecycle-store.mjs` | Reusable, fail-closed source transform for a final lifecycle-store refresh. |
-| `tests/` | Offline synthetic lifecycle, policy, review, and host-boundary tests. |
+| `scripts/redteam-demo.ts`, `scripts/demo/` | Local in-memory red-team demo (see below). |
+| `tests/` | Offline synthetic lifecycle, policy, review, and host-boundary tests, plus opt-in database suites for mandate hardening and Proof of Permission refusals. |
 
 The `ledger/` directory is included as an independently locked compiler and local-EVM test package. Its source is part of this TPA-only repository but not part of the authorization library's runtime build. It has no deployment, wallet, signing-key or external-chain path. See `ledger/README.md` and run its installation/test commands separately.
 
@@ -41,18 +45,43 @@ pnpm build
 pnpm audit --prod
 ```
 
-None of these commands starts a server or connects to a database. Installation and the audit contact the package registry; application tests use synthetic fixtures and loopback HTTP only. A nonzero audit result must be investigated rather than bypassed. The checked-in lockfile and `qs` security override preserve the reviewed dependency set.
+None of these commands starts a server. `pnpm test` connects to a database only when `TPA_TEST_DATABASE_URL` is set (see [Running the tests](#running-the-tests)); without it the database suites are skipped. Installation and the audit contact the package registry; the other application tests use synthetic fixtures and loopback HTTP only. A nonzero audit result must be investigated rather than bypassed. The checked-in lockfile and `qs` security override preserve the reviewed dependency set.
 
 ## Configure deliberately
 
-Copy `.env.example` to an operator-managed deployment secret/configuration system. The file contains placeholders only. All four items are required for a live host integration:
+Copy `.env.example` to an operator-managed deployment secret/configuration system. The file contains placeholders only. A live host integration needs these values:
 
 ```dotenv
 TPA_ORIGIN=https://tpa.example.invalid
 TPA_RP_ID=tpa.example.invalid
 TPA_AUTHORIZATION_ENABLED=false
 TPA_DATABASE_URL=mysql://USER:PASSWORD@HOST:3306/DATABASE
+NODE_ENV=production
+TPA_MANDATE_SIGNING_KEY_ID=tpa-example-key-id
+TPA_MANDATE_SIGNING_KEY=REPLACE_WITH_BASE64_PKCS8_ED25519_PRIVATE_KEY_FROM_SECRET_MANAGER
+TPA_MANDATE_VERIFY_KEYS=
 ```
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `TPA_ORIGIN` | Yes | Exact HTTPS origin of the WebAuthn relying party. |
+| `TPA_RP_ID` | Yes | WebAuthn RP ID; must exactly equal the hostname of `TPA_ORIGIN`. |
+| `TPA_AUTHORIZATION_ENABLED` | Yes | Only the exact value `true` enables authorization. |
+| `TPA_DATABASE_URL` | Yes | MySQL connection string, supplied only through a secret manager. |
+| `NODE_ENV` | Yes | Keep `production`. Only `development` permits an explicitly configured `https://localhost` authority. |
+| `TPA_MANDATE_SIGNING_KEY_ID` | Yes | Id of the active Ed25519 mandate signing key. |
+| `TPA_MANDATE_SIGNING_KEY` | Yes | Ed25519 private key as base64 PKCS#8 DER (or PKCS#8 PEM). Keep it in a secret manager. |
+| `TPA_MANDATE_VERIFY_KEYS` | No | Retired public keys still accepted during rotation, as `keyId=base64SpkiDer`, comma separated. May be empty. |
+
+Without `TPA_MANDATE_SIGNING_KEY_ID` and `TPA_MANDATE_SIGNING_KEY`, checkout mandates are refused (fail closed), and `examples/express-host.ts` refuses to mount.
+
+Generate a signing key for a new key id with:
+
+```sh
+node scripts/generate-mandate-signing-key.mjs <keyId> /secure/path/key.b64
+```
+
+The script refuses to overwrite an existing file, writes the base64 PKCS#8 private key to that file with mode 0600, and prints only `TPA_MANDATE_SIGNING_KEY_ID=<keyId>` and the public key (the `keyId=...` value to add to `TPA_MANDATE_VERIFY_KEYS` after a later rotation). Load the private key into the secret manager as `TPA_MANDATE_SIGNING_KEY`, then delete the file. Never commit it; `.gitignore` excludes `*.pem`, `*.key` and `*.b64` files as a safety net.
 
 Authorization remains disabled unless the operator explicitly sets the exact activation value `true` after staging approval. The service fails closed when `TPA_ORIGIN` is absent or not an exact HTTPS origin or when `TPA_RP_ID` does not exactly equal its hostname. Configuration is never inferred from `Host`, `X-Forwarded-Host`, a query string, or browser input. An explicit `https://localhost` authority is permitted only when the integrator deliberately sets `localDevelopment: true`.
 
@@ -60,10 +89,10 @@ Authorization remains disabled unless the operator explicitly sets the exact act
 
 The host owns authentication, session issuance, session revocation, principal enablement/ban rules, and designation of the one allowed owner. The package does **not** contain an authentication system and will not promote arbitrary callers to owner status.
 
-1. Apply `migrations/0000_tpa_standalone.sql` to a dedicated MySQL schema in a reviewed migration job. If using the provided minimal owner adapter, create the allowed owner explicitly in `tpa_principals`; do not expose a public endpoint that changes `isOwner`.
+1. Apply `migrations/0000_tpa_standalone.sql` and then `migrations/0001_tpa_mandate_hardening.sql` to a dedicated MySQL schema in a reviewed migration job. If using the provided minimal owner adapter, create the allowed owner explicitly in `tpa_principals`; do not expose a public endpoint that changes `isOwner`.
 2. Build a `TpaHostAdapter`. `getDb()` returns the host's Drizzle database. `assertOwnerForUpdate(transaction, userId)` must, within the supplied transaction, lock the host principal and reject absent, disabled, banned, revoked, or non-owner principals. `createMinimalOwnerAdapter()` is complete for the supplied `tpa_principals` contract; hosts with their own user table should implement an equivalent adapter.
 3. After the host's server-side session middleware authenticates its HTTP-only credential, resolve an identity as `{ principalId, sessionHash, owner: true }`. The `sessionHash` must be a SHA-256-style lowercase 64-hex binding generated by the host from a valid current session. Never accept it from request query/body input. Returning `undefined` for revoked, banned, expired, or non-owner sessions is required.
-4. Construct `createTpaStore(hostAdapter)`, then `createTpaService({ store, authority })`. Mount `createTpaExpressRouter(service, resolveAuthenticatedOwner)` before a host-wide generic JSON parser. The included `examples/express-host.ts` uses the working minimal owner adapter and the host-provided actual authenticated-session resolver. It does not contain placeholder authentication or grant anyone privileges.
+4. Construct `createTpaStore(hostAdapter)`, load the signer with `tpaMandateSignerFromEnv()`, then `createTpaService({ store, authority, signer, evidence: createTpaEvidenceStore(hostAdapter) })`. Mount `createTpaExpressRouter(service, resolveAuthenticatedOwner)` before a host-wide generic JSON parser. The included `examples/express-host.ts` uses the working minimal owner adapter and the host-provided actual authenticated-session resolver. It does not contain placeholder authentication or grant anyone privileges.
 5. Terminate HTTPS at the configured origin, configure the exact RP ID, protect administrative operations, and log security-relevant host decisions without logging cookies, raw WebAuthn assertions, credential public keys, or mandate recipient data unnecessarily.
 
 A condensed complete construction looks like this:
@@ -71,7 +100,8 @@ A condensed complete construction looks like this:
 ```ts
 const authority = createTpaAuthority({ enabled: process.env.TPA_AUTHORIZATION_ENABLED === "true", origin: process.env.TPA_ORIGIN, rpID: process.env.TPA_RP_ID });
 const store = createTpaStore(hostAdapter); // hostAdapter performs locked current-owner check
-const service = createTpaService({ store, authority });
+const signer = tpaMandateSignerFromEnv(process.env); // Ed25519 key from the secret manager; undefined means checkout mandates are refused
+const service = createTpaService({ store, authority, signer, evidence: createTpaEvidenceStore(hostAdapter) });
 app.use("/tpa-api", createTpaExpressRouter(service, async request => {
   const session = await hostReadCurrentSession(request); // host validates cookie/signature/revocation/expiry
   const principal = session && await hostReadCurrentPrincipal(session.principalId); // host checks owner + enabled + ban
@@ -107,6 +137,33 @@ All money is an integer count of base units (cents for USD) carried as a string.
 - **Audit log.** `tpa_audit_events` records approvals (`intent_created`, `authorized`, `consumed`, `revoked`, credential changes), consume attempts, and every refusal. Each row holds a reason code and a timestamp. It holds no session hashes, challenges, nonces, signatures or keys. The owner can read it with `service.auditLog()` / `GET /audit`.
 - **Migration.** Apply `migrations/0001_tpa_mandate_hardening.sql` after `0000`. It only adds tables.
 - **Legacy.** The 2.0 amount-and-recipient transfer mandate is refused unless `legacyTransferMandates: true`.
+
+## Running the tests
+
+Library tests (Vitest):
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm test
+```
+
+Without a database, 31 tests run and 69 are skipped. The two database suites, `tests/mandate.hardening.test.ts` (signed, passkey-bound, exact-match checkout mandates) and `tests/mandate.proof-of-permission.test.ts` (Proof of Permission refusals: changed amount, recipient or fee, expiry, replay, revocation, missing or forged passkey approval), run against the real service, real MySQL store and real WebAuthn verification when `TPA_TEST_DATABASE_URL` points at a disposable MariaDB or MySQL schema:
+
+```sh
+TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' pnpm test
+```
+
+The suites drop and recreate every `tpa_*` table in that schema, so never point them at a shared or production database. With a database, all **100 library tests across 8 files** pass (verified locally on MariaDB 11.8).
+
+Ledger tests (local in-memory EVM, no database):
+
+```sh
+cd ledger
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm test
+```
+
+The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 31 offline library tests and the 20 ledger tests.
 
 ## Red-team demo (local, in memory)
 
@@ -144,6 +201,10 @@ pnpm check && pnpm test && pnpm build
 ```
 
 The script reads its input and only writes `src/store.ts`. It replaces DingDong's schema/database/owner imports with the standalone schema and explicit `TpaHostAdapter`; it fails if expected source markers or isolation checks are absent. Confirm after every refresh that `src/store.ts` contains no `../../` import, `getDb` import, or `isPersonalWalletOwner` reference. Do not substitute an older store file: lifecycle tests cover the post-lock clock checks, nonce/hash replay prevention, and registration completion claim.
+
+## Hackathon
+
+TPA is being built for the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/) as the approval layer of the "TPA Shopping Agent" idea: a shopping agent whose checkout is refused unless the shopper's passkey approved those exact terms. This package does not call any Airwallex API; it supplies the signed, passkey-bound mandate and the exact-match check at consume.
 
 ## Scope exclusions and operator decisions
 
