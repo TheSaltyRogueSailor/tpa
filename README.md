@@ -309,11 +309,11 @@ Setup (secrets stay in gitignored, `chmod 600` files and are never printed; erro
 METAL_LIVE=1 pnpm demo:shopper
 ```
 
-Optional env: `METAL_MERCHANT_ADDRESS` (recipient, default the demo merchant address), `METAL_DEMO_BUDGET_CENTS` (budget for the live Metal scenario, default `5000`, because the 100 USDZ faucet top-up is less than the $113 demo cart). Values in the process environment override the files. 1 cent = 10^16 USDZ base units.
+Optional env: `METAL_MERCHANT_ADDRESS` (recipient; can also live in the gitignored `.env.metal-demo` as a non-secret default, otherwise the demo merchant placeholder address is used, where funds are unrecoverable), `METAL_DEMO_BUDGET_CENTS` (budget for the live Metal scenario, default `5000`, because the 100 USDZ faucet top-up is less than the $113 demo cart). Values in the process environment override the files. 1 cent = 10^16 USDZ base units.
 
 ## Scope exclusions and operator decisions
 
-This package intentionally omits all DingDong application material, social UI, user records, payment pages, wallet code, blockchain client code, signing keys, provider accounts, secret values, bank/payment integrations, transfer execution, monitoring agents, and deployment automation. The schema has no foreign keys to host users because a host may use any principal store; the minimum principal table is included solely as a runnable contract option.
+This package intentionally omits all DingDong application material, social UI, user records, payment pages, custodial wallet code, signing keys, provider accounts, secret values, bank/payment integrations, monitoring agents, and deployment automation. The one exception is the optional TPA Shopper Metal rail: with `METAL_LIVE=1` and locally supplied, gitignored credentials, `shopper/metal.ts` submits a real `*USDZ` transfer on Metal Testnet (alta-testnet, chain 63825) after the TPA checks pass. Without the flag, every payment rail, Metal included, is a mock and nothing is submitted to any chain. No keys or RPC credentials ship with the package. The schema has no foreign keys to host users because a host may use any principal store; the minimum principal table is included solely as a runnable contract option.
 
 Before a pilot deployment, operators still need an independent security review, privacy/legal review, WebAuthn RP/origin deployment review, database backup/recovery plan, session/revocation implementation review, logging/retention policy, incident response plan, and a separate design for any later payment or ledger system. Nothing here makes claims of bank certification, production readiness, guaranteed fraud prevention, or compliance.
 

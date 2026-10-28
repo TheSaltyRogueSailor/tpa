@@ -27,7 +27,7 @@ These are local results and were not run on MySQL 8 or in remote CI.
 
 The integrating host must supply and validate real authenticated sessions, owner designation, bans/disablement, session revocation, transactional principal locks and exact HTTPS/RP configuration. Real device/browser-origin staging, real MySQL concurrent-operation/restart acceptance, backup/restore drills, independent penetration/security review and purchaser legal/IP review remain required. Local tests are not bank certification, independent face liveness or proof of assets/settlement. No perfect-code or guaranteed-fraud-prevention claim is made.
 
-TPA is authorization evidence only: no payment execution, custody, conversion, independent liveness, host identity-proofing, automatic monitoring or on-chain submission is included. The immutable canonical ledger-domain string is preserved as provenance and does not connect to DingDong or to a deployed Rootstock contract.
+TPA is authorization evidence only: no payment execution, custody, conversion, independent liveness, host identity-proofing, automatic monitoring or on-chain submission is included in the TPA library. The separate TPA Shopper demo can optionally submit a Metal Testnet `*USDZ` transfer when `METAL_LIVE=1` is set with local credentials; by default it is mocked. The immutable canonical ledger-domain string is preserved as provenance and does not connect to DingDong or to a deployed Rootstock contract.
 
 ## Reviewed external sources
 

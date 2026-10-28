@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "UNLICENSED",
-  "description": "Standalone WebAuthn-backed transfer-authorization pilot; no payment execution or chain submission.",
+  "description": "Standalone WebAuthn-backed transfer-authorization pilot. Payment rails are mocked by default; real Metal testnet (USDZ) payments are optional behind METAL_LIVE=1.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
