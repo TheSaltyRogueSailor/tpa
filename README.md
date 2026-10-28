@@ -272,7 +272,7 @@ Implemented from the [Visa TAP merchant specification](https://developer.visa.co
 | --- | --- |
 | Founder's Choice, Judges Choice | Working Kit 09 flow: approval bound to the exact cart, re-approval required on any drift, single use, audit trail, five attack classes blocked live |
 | Visa Award | Visa TAP agent signatures and payment container (`shopper/tap.ts`), verified merchant side, plus the Airwallex payment adapter |
-| Metal Award | USDZ payment rail on Metal behind `MetalClient` (`shopper/payments.ts`), mandate hash carried as the transfer memo |
+| Metal Award | USDZ payment rail on Metal behind `MetalClient` (`shopper/payments.ts`), real alta-testnet transfers in `shopper/metal.ts` with `METAL_LIVE=1`; the TPA mandate hash is kept in the payment result next to the tx hash (a MIP20 `transfer` has no memo field) |
 
 ### What is mocked and how to make it real
 
@@ -280,11 +280,36 @@ Implemented from the [Visa TAP merchant specification](https://developer.visa.co
 | --- | --- | --- |
 | Airwallex Kit 09 payment (Airi CLI) | `createMockAiriAdapter`: simulates payment mandate, one-time credentials and result report; idempotent per TPA intent | Airi account at app.airi.com, then email devhelp@airwallex.com for allowlisted Airi CLI access. Replace the TODO in `shopper/payments.ts` with the Airi CLI calls (select method, create payment mandate, fetch one-time credentials, report result). Kit 09 places real orders with an Airwallex-issued card, so this needs Raul's go-ahead. |
 | Airwallex sandbox REST | `createAirwallexSandboxAdapter` written (login, `pa/payment_intents/create`, `confirm`) but never run | Sandbox account at sandbox.airwallex.com, set `AWX_CLIENT_ID`, `AWX_API_KEY` and `AWX_TEST_CARD_NUMBER` (the sandbox test card from the guide). Verify field names with the Airwallex docs MCP before relying on it. |
-| Metal USDZ | `createMockMetalClient`: in-memory USDZ balances, 18 decimals, chain 63825, token `0x000000000000000000000000000000000000b5d5`, instant finality | When Metal testnet billing is back: create an RPC endpoint in the Metal console, fund a key with test USDZ from the faucet, `pnpm add @metalntwx/metal-ts@0.3.2 viem@2.57.7`, set `METAL_RPC_URL` and `METAL_PAYER_KEY` (never committed), and implement `createMetalTestnetClient` (`balanceOf`, `transfer`, wait for finalized receipt). |
+| Metal USDZ | Default: `createMockMetalClient` (in-memory USDZ, 18 decimals, chain 63825, token `0x000000000000000000000000000000000000b5d5`, instant finality). Live: `createMetalTestnetClient` in `shopper/metal.ts` | Implemented; see "Live Metal mode" below. Fund the payer from the Metal faucet, then run with `METAL_LIVE=1`. |
 | Visa key directory | Local map of trusted agent keys | Visa Intelligent Commerce onboarding and the Visa-hosted well-known key URL. |
 | Merchant | Local demo merchant with a synthetic catalog | Kit 09 targets real merchant sites through browser automation; the TAP and TPA checks stay the same. |
 | Passkey | Synthetic authenticator with real P-256 keys and real WebAuthn verification | Use `client-reference/tpa-client.ts` in a browser with a real platform authenticator. |
 | TPA store | Demo in-memory port (`scripts/demo/memory-store.ts`) | The MySQL store in `src/store.ts`. |
+
+### Live Metal mode (alta-testnet)
+
+The Metal rail is mocked unless you opt in. With `METAL_LIVE=1` and credentials present, `pnpm demo:shopper` pays scenario 2 with a real `*USDZ` transfer on Metal Testnet (chain `63825`, `0xf951`), after the same TPA checks: Proof of Person (owner passkey), Presence (Visa TAP-signed agent requests) and Permission (exact-match mandate consume). If the flag or any credential is missing, the rig silently falls back to the mock, and the demo prints why. Tests always use the mock (`createShopperRig({ metal: "mock" })`).
+
+What the live client does (`shopper/metal.ts`, per docs.metalntwx.com):
+
+1. Checks `eth_chainId == 63825`, `MIP20Factory(0x...0f4c).isMIP20(USDZ)` and `USDZ.decimals() == 18`.
+2. Estimates gas, checks the payer holds amount plus gas (gas is paid in USDZ at 1 base unit per gas), and signs a `0x7f` MIP20 transaction with `@metalntwx/metal-ts` `signMip20Contract` (`transfer(merchant, amount)`, `gasToken` = USDZ).
+3. Broadcasts, waits for the receipt, requires `status = success` and a matching `Transfer(payer, merchant, amount)` log from USDZ (anything else, e.g. a ReceivePolicy quarantine, is refused).
+4. Waits until `consensus_status.finalized.number >= receipt.blockNumber` and the canonical block hash matches, then returns the tx hash.
+
+Transfers are serialized per payer, and on a lost response the error carries the tx hash so it is checked rather than resent.
+
+Setup (secrets stay in gitignored, `chmod 600` files and are never printed; errors are masked):
+
+```bash
+# .env.metal         METAL_RPC_URL=https://rpc-testnet.metalntwx.com/v1/<endpoint-id>   (the URL is the credential)
+#                    METAL_API_KEY=...   (optional, only used to mask output)
+# .env.metal-wallet  METAL_PAYER_KEY=0x...  METAL_PAYER_ADDRESS=0x...   (throwaway testnet key)
+# Fund METAL_PAYER_ADDRESS at the Metal faucet with currency *USDZ (tops up to 100 USDZ).
+METAL_LIVE=1 pnpm demo:shopper
+```
+
+Optional env: `METAL_MERCHANT_ADDRESS` (recipient, default the demo merchant address), `METAL_DEMO_BUDGET_CENTS` (budget for the live Metal scenario, default `5000`, because the 100 USDZ faucet top-up is less than the $113 demo cart). Values in the process environment override the files. 1 cent = 10^16 USDZ base units.
 
 ## Scope exclusions and operator decisions
 

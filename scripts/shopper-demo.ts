@@ -58,7 +58,10 @@ async function main() {
 
     const happy = await scenario("1. Happy path: agent buys, owner approves, paid via Airwallex (mock Airi)", "PAID", () => rig.shop(intent));
     if (happy.quote) say(dim(`  Approved cart: ${happy.quote.items.map(i => `${i.qty} x ${i.sku} @ $${(Number(i.unitPriceBaseUnits) / 100).toFixed(2)}`).join(", ")}\n`));
-    await scenario("2. Same cart paid in USDZ on Metal (mock testnet, chain 63825)", "PAID", () => rig.shop({ ...intent, rail: "metal" }));
+    say(dim(`  Metal rail: ${rig.metalSelection.live ? `LIVE alta-testnet, payer ${rig.metalSelection.payer}` : `mock (${rig.metalSelection.reason})`}`));
+    await scenario(`2. Same cart paid in USDZ on Metal (${rig.metalSelection.live ? "LIVE alta-testnet" : "mock testnet"}, chain 63825)`, "PAID", () => rig.shop({ ...intent, rail: "metal",
+      // Live: the faucet tops up to 100 USDZ, less than this $113 cart, so the live run uses a smaller budget (default $50).
+      ...(rig.metalSelection.live ? { budgetCents: Number(process.env.METAL_DEMO_BUDGET_CENTS ?? 5_000) } : {}) }));
 
     rig.merchant.setAttack("price_swap");
     await scenario("Attack A: merchant raises a price after the owner approved", "BLOCKED", () => rig.shop(intent));
@@ -83,7 +86,7 @@ async function main() {
     say(cyan("== Summary =="));
     for (const r of results) say(`  ${r.pass ? green("PASS") : red("FAIL")}  ${r.outcome === "PAID" ? green("PAID   ") : red("BLOCKED")}  ${r.name}  ${dim(r.reason)}`);
     say();
-    say(yellow("  Mocked pending credentials: Airwallex Airi CLI (Kit 09 allowlist), Metal testnet RPC + USDZ key."));
+    say(yellow("  Mocked pending credentials: Airwallex Airi CLI (Kit 09 allowlist), Metal is mock unless METAL_LIVE=1 (see README)."));
     say(dim("  Real: TPA mandate 3.0 + Ed25519 signature, WebAuthn ES256 verification, exact-match consume, audit log, Visa TAP RFC 9421 signing/verification."));
     if (results.some(r => !r.pass)) process.exitCode = 1;
   } finally {
