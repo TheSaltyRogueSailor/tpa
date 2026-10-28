@@ -6,7 +6,7 @@ import { centsToUsdz, createMockAiriAdapter, PaymentRefused } from "../shopper/p
 
 const INTENT = { text: "Coffee brewing setup for the office: beans, filters, mugs", budgetCents: 12_000 };
 let rig: ShopperRig;
-beforeAll(async () => { rig = await createShopperRig(); });
+beforeAll(async () => { rig = await createShopperRig({ metal: "mock" }); });
 afterAll(async () => { await rig.close(); });
 
 describe("TPA Shopper planner", () => {

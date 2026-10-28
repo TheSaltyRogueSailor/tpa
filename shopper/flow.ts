@@ -15,7 +15,8 @@ import { createMemoryTpaPersistence } from "../scripts/demo/memory-store.js";
 import { planCart, type Plan, type ShoppingIntent } from "./agent.js";
 import { DEMO_MERCHANT, DEMO_MERCHANT_METAL_ADDRESS, type Product } from "./catalog.js";
 import { startDemoMerchant, type MerchantAttack, type Quote } from "./merchant.js";
-import { createMetalUsdzAdapter, createMockAiriAdapter, createMockMetalClient, PaymentRefused, type PaymentAdapter, type PaymentResult } from "./payments.js";
+import { createMetalUsdzAdapter, createMockAiriAdapter, PaymentRefused, type PaymentAdapter, type PaymentResult } from "./payments.js";
+import { selectMetalClient } from "./metal.js";
 import { createTapKeyDirectory, createTapSigner, createTapVerifier, type TapTag } from "./tap.js";
 
 export const SHOPPER_PAYER_METAL_ADDRESS = "0x000000000000000000000000000000000000a11c";
@@ -39,7 +40,11 @@ export type ShopOutcome = {
 };
 export type ShopOptions = ShoppingIntent & { rail?: "airwallex" | "metal"; merchantAttack?: MerchantAttack; ownerApproves?: boolean };
 
-export async function createShopperRig(options: { agentKeyPath?: string } = {}) {
+/**
+ * metal: "auto" (default) uses the real alta-testnet client only when METAL_LIVE=1 and credentials are present,
+ * otherwise the mock; "mock" always uses the mock (tests).
+ */
+export async function createShopperRig(options: { agentKeyPath?: string; metal?: "auto" | "mock"; env?: NodeJS.ProcessEnv } = {}) {
   const owner = { principalId: 1, sessionHash: "a".repeat(64), owner: true as const };
   const ctx = { owner, headers: { origin: ORIGIN } };
   const now = () => Date.now();
@@ -55,10 +60,14 @@ export async function createShopperRig(options: { agentKeyPath?: string } = {}) 
   const agentTap = createTapSigner(loadOrCreateAgentKey(options.agentKeyPath));
   const keyDirectory = createTapKeyDirectory([agentTap.jwk]);
   const merchant = await startDemoMerchant({ verifier: createTapVerifier(keyDirectory), nowSeconds });
-  const metal = createMockMetalClient({ [SHOPPER_PAYER_METAL_ADDRESS]: 500n * 10n ** 18n });
+  const env = options.env ?? process.env;
+  const metalSelection = selectMetalClient({ env: options.metal === "mock" ? {} : env, mockPayer: SHOPPER_PAYER_METAL_ADDRESS, mockBalance: 500n * 10n ** 18n });
+  const metal = metalSelection.client;
+  const merchantMetalAddress = (metalSelection.live && env.METAL_MERCHANT_ADDRESS) || DEMO_MERCHANT_METAL_ADDRESS;
   const rails: Record<"airwallex" | "metal", PaymentAdapter> = {
     airwallex: createMockAiriAdapter(),
-    metal: createMetalUsdzAdapter(metal, SHOPPER_PAYER_METAL_ADDRESS, { [DEMO_MERCHANT.id]: DEMO_MERCHANT_METAL_ADDRESS }),
+    // TPA checks (Proof of Person via passkey, Presence via TAP, Permission via mandate consume) all run before rail.pay().
+    metal: createMetalUsdzAdapter(metal, metalSelection.payer, { [DEMO_MERCHANT.id]: merchantMetalAddress }),
   };
 
   /** Every agent -> merchant request is TAP-signed; checkout calls also carry a signed payment container. */
@@ -138,6 +147,6 @@ export async function createShopperRig(options: { agentKeyPath?: string } = {}) 
     return { firstStatus: first.status, replay: { status: replay.status, ...(await replay.json() as { reason?: string }) }, unsigned: { status: unsigned.status, ...(await unsigned.json() as { reason?: string }) } };
   }
 
-  return { shop, replayCapturedCheckout, service, ctx, merchant, rails, metal, agentTap, auditLog: (intentId?: string) => service.auditLog(ctx, { intentId, limit: 50 }), close: () => merchant.close() };
+  return { shop, replayCapturedCheckout, service, ctx, merchant, rails, metal, metalSelection: { live: metalSelection.live, payer: metalSelection.payer, reason: metalSelection.reason }, agentTap, auditLog: (intentId?: string) => service.auditLog(ctx, { intentId, limit: 50 }), close: () => merchant.close() };
 }
 export type ShopperRig = Awaited<ReturnType<typeof createShopperRig>>;

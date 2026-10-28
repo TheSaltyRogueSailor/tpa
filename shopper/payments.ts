@@ -8,9 +8,9 @@
  *     idempotency rule ("check the prior attempt before any retry").
  *   Airwallex sandbox REST: AirwallexSandboxAdapter, only used when AWX_CLIENT_ID / AWX_API_KEY are set.
  *     NOT exercised yet (no keys). Endpoints per airwallexdev.com/guide.
- *   Metal (USDZ on Metal testnet): MetalUsdzAdapter over a MetalClient. MockMetalClient now; the real
- *     client (viem + @metalntwx/metal-ts, chain 63825, USDZ at 0x...b5d5, 18 decimals) is a TODO until
- *     Metal testnet billing is back and we have an RPC endpoint + funded key.
+ *   Metal (USDZ on Metal alta-testnet): MetalUsdzAdapter over a MetalClient. MockMetalClient by default; the
+ *     real client (viem + @metalntwx/metal-ts, chain 63825, USDZ at 0x...b5d5, 18 decimals) lives in
+ *     shopper/metal.ts and is selected only with METAL_LIVE=1 plus METAL_RPC_URL and METAL_PAYER_KEY.
  */
 import { createHash } from "node:crypto";
 
@@ -116,16 +116,7 @@ export function createMockMetalClient(balances: Record<string, bigint> = {}): Me
     },
   };
 }
-/**
- * TODO(metal): real client once testnet billing works and we have an RPC endpoint and a funded key.
- *   pnpm add @metalntwx/metal-ts@0.3.2 viem@2.57.7
- *   env: METAL_RPC_URL=https://rpc-testnet.metalntwx.com/v1/<endpoint-id>, METAL_PAYER_KEY (never committed)
- *   balanceOf -> readContract(erc20Abi, USDZ, "balanceOf"); transfer -> writeContract(erc20Abi, "transfer"),
- *   then wait for the finalized receipt (see docs.metalntwx.com Settlement and Finality).
- */
-export function createMetalTestnetClient(): MetalClient {
-  throw new PaymentRefused("not_configured", "Metal testnet client not wired yet: needs METAL_RPC_URL and a funded USDZ key (testnet billing is down).");
-}
+// Real client: createMetalTestnetClient / selectMetalClient in ./metal.ts (kept separate so the mock has no chain deps).
 /** cents -> USDZ base units (18 decimals): 1 cent = 10^16. */
 export const centsToUsdz = (cents: string) => BigInt(cents) * 10n ** 16n;
 
