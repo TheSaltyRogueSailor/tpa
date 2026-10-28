@@ -147,13 +147,13 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-Without a database, 31 tests run and 69 are skipped. The two database suites, `tests/mandate.hardening.test.ts` (signed, passkey-bound, exact-match checkout mandates) and `tests/mandate.proof-of-permission.test.ts` (Proof of Permission refusals: changed amount, recipient or fee, expiry, replay, revocation, missing or forged passkey approval), run against the real service, real MySQL store and real WebAuthn verification when `TPA_TEST_DATABASE_URL` points at a disposable MariaDB or MySQL schema:
+Without a database, 45 tests run (31 TPA plus 14 TPA Shopper, which never need a database) and 69 are skipped. The two database suites, `tests/mandate.hardening.test.ts` (signed, passkey-bound, exact-match checkout mandates) and `tests/mandate.proof-of-permission.test.ts` (Proof of Permission refusals: changed amount, recipient or fee, expiry, replay, revocation, missing or forged passkey approval), run against the real service, real MySQL store and real WebAuthn verification when `TPA_TEST_DATABASE_URL` points at a disposable MariaDB or MySQL schema:
 
 ```sh
 TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' pnpm test
 ```
 
-The suites drop and recreate every `tpa_*` table in that schema, so never point them at a shared or production database. With a database, all **100 library tests across 8 files** pass (verified locally on MariaDB 11.8).
+The suites drop and recreate every `tpa_*` table in that schema, so never point them at a shared or production database. With a database, all **114 library tests across 10 files** pass (verified locally on MariaDB 11.8).
 
 Ledger tests (local in-memory EVM, no database):
 
@@ -163,7 +163,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 31 offline library tests and the 20 ledger tests.
+The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 45 offline library tests (31 TPA plus 14 TPA Shopper) and the 20 ledger tests.
 
 ## Red-team demo (local, in memory)
 
@@ -204,7 +204,87 @@ The script reads its input and only writes `src/store.ts`. It replaces DingDong'
 
 ## Hackathon
 
-TPA is being built for the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/) as the approval layer of the "TPA Shopping Agent" idea: a shopping agent whose checkout is refused unless the shopper's passkey approved those exact terms. This package does not call any Airwallex API; it supplies the signed, passkey-bound mandate and the exact-match check at consume.
+TPA is being built for the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/) as the approval layer of the "TPA Shopping Agent" idea: a shopping agent whose checkout is refused unless the shopper's passkey approved those exact terms. The library in `src/` does not call any Airwallex API; it supplies the signed, passkey-bound mandate and the exact-match check at consume. The hackathon app is in `shopper/` (below) and is not part of the published library.
+
+## TPA Shopper (Kit 09: Approval-Bound Shopping Agent)
+
+TPA Shopper is an AI shopping agent that can only spend what its owner approved, exactly once, at exactly the merchant, items, shipping, tax and total the owner saw. It follows [Kit 09 in the Airwallex builder guide](https://airwallexdev.com/guide): the shopper gives a need and a budget, the agent builds a cart, asks for approval of the exact terms, and asks again (here: refuses) when anything drifts. Kit 09 has no public starter repo; it runs on Airi CLI, which is allowlisted, so the Airi steps are mocked behind an adapter until access is granted.
+
+### Run the demo
+
+```sh
+pnpm install --frozen-lockfile
+pnpm demo:shopper            # full run, about 3 seconds
+pnpm demo:shopper -- --slow  # paced output for screen recording
+pnpm test                    # includes tests/shopper.tap.test.ts and tests/shopper.flow.test.ts
+```
+
+Requirements: Node 20+ and pnpm. No database, no API keys, no network beyond a merchant server on 127.0.0.1 with a random port. On first run the agent's TAP key is generated at `.shopper-keys/tap-agent-ed25519.pem` (gitignored, mode 600; override with `TPA_SHOPPER_AGENT_KEY`). The TPA mandate key is generated in memory per run unless `TPA_MANDATE_SIGNING_KEY_ID` and `TPA_MANDATE_SIGNING_KEY` are set.
+
+### What the demo shows
+
+| Scenario | Expected | Stopped by |
+| --- | --- | --- |
+| 1. Agent buys a coffee setup within a $120 budget, owner approves with passkey, paid via Airwallex (mock Airi), order number returned | PAID | |
+| 2. Same flow paid in USDZ on Metal (mock, chain 63825) | PAID | |
+| A. Merchant raises a price after approval | BLOCKED | TPA `terms_changed:items_mismatch` |
+| B. Checkout page injects an extra $49.99 protection plan | BLOCKED | TPA `terms_changed:items_mismatch` |
+| C. Lookalike merchant id (`harbor-supp1y`) at payment time | BLOCKED | TPA `terms_changed:merchant_mismatch` |
+| D. Agent tries to pay without the owner's passkey approval | BLOCKED | TPA `intent` |
+| E. Attacker replays a captured agent checkout request; unsigned bot hits checkout | BLOCKED | Merchant TAP check `nonce_replayed`, `not_signed` |
+
+Each blocked case moves no money (the payment adapters refuse to run without a TPA consume receipt) and leaves an audit entry; the demo prints the audit log for case B.
+
+### How it fits together
+
+```
+shopper intent + budget
+  -> agent browses merchant          (Visa TAP, tag agent-browser-auth)
+  -> agent plans cart within budget  (shopper/agent.ts, amounts in code)
+  -> merchant quote                  (items, shipping, tax, total)
+  -> TPA mandate 3.0, Ed25519 signed (src/service.ts createIntent)
+  -> owner passkey approval          (WebAuthn challenge bound to the mandate hash)
+  -> agent checkout at merchant      (Visa TAP, tag agent-payer-auth + agenticPaymentContainer
+                                      carrying the TPA mandate hash, same nonce and key)
+  -> merchant returns payment request
+  -> TPA exact-match consume         (single use; any drift is refused with a reason code)
+  -> payment rail                    (Airwallex or Metal adapter, needs the consume receipt)
+  -> merchant order number           (TAP signed)
+```
+
+Files: `shopper/tap.ts` (TAP signer and merchant verifier), `shopper/merchant.ts` (demo merchant with attack modes), `shopper/agent.ts` (planner), `shopper/payments.ts` (rails), `shopper/flow.ts` (orchestration), `scripts/shopper-demo.ts` (CLI).
+
+### Visa Trusted Agent Protocol details
+
+Implemented from the [Visa TAP merchant specification](https://developer.visa.com/capabilities/trusted-agent-protocol/trusted-agent-protocol-specifications) and the [visa/trusted-agent-protocol](https://github.com/visa/trusted-agent-protocol) reference code (cdn-proxy verifier, commit 16d59bd), on top of [RFC 9421](https://www.rfc-editor.org/rfc/rfc9421):
+
+- Every agent request carries `Signature-Input: sig2=("@authority" "@path");created=...;expires=...;keyid="...";alg="ed25519";nonce="...";tag="..."` and `Signature: sig2=:<base64>:`.
+- `tag` is `agent-browser-auth` for catalog and quote, `agent-payer-auth` for checkout and completion. The merchant enforces the right tag per endpoint.
+- The merchant applies the spec's verification steps: block when the tag or any required field (`created`, `expires`, `keyid`, `alg`, `nonce`, `tag`, `@authority`, `@path`) is missing, when `created` is in the future or `expires` is in the past, when the two are more than 8 minutes apart, when the nonce was seen in the last 8 minutes, when the key is not in the key directory, or when the signature fails.
+- Checkout bodies carry an `agenticPaymentContainer` (`nonce`, `kid`, `alg`, payment fields, `signature`) signed with the same key, with the same nonce as the message signature; its base is the fields in received order except `signature`, as the spec describes. We put the TPA mandate hash and checkout id in it, which links the Visa agent identity to the owner's TPA approval.
+- `keyid` is the RFC 7638 JWK thumbprint of the agent's Ed25519 key, the same shape as the keyids in Visa's examples. The key directory is a local stand-in for the scheme's Public Keys Retrieval Service.
+- Base string follows RFC 9421 section 2.5 (quoted component names, `"@signature-params"` line last). The spec's Python sample prints unquoted component names; the Visa cdn-proxy and RFC 9421 both quote them, and we follow those.
+- Not yet implemented: the Agentic Consumer Recognition Object (Visa ID token) and real key retrieval from Visa's well-known URL; both need Visa Intelligent Commerce onboarding.
+
+### Prize mapping
+
+| Prize | What targets it |
+| --- | --- |
+| Founder's Choice, Judges Choice | Working Kit 09 flow: approval bound to the exact cart, re-approval required on any drift, single use, audit trail, five attack classes blocked live |
+| Visa Award | Visa TAP agent signatures and payment container (`shopper/tap.ts`), verified merchant side, plus the Airwallex payment adapter |
+| Metal Award | USDZ payment rail on Metal behind `MetalClient` (`shopper/payments.ts`), mandate hash carried as the transfer memo |
+
+### What is mocked and how to make it real
+
+| Piece | Today | To make it real |
+| --- | --- | --- |
+| Airwallex Kit 09 payment (Airi CLI) | `createMockAiriAdapter`: simulates payment mandate, one-time credentials and result report; idempotent per TPA intent | Airi account at app.airi.com, then email devhelp@airwallex.com for allowlisted Airi CLI access. Replace the TODO in `shopper/payments.ts` with the Airi CLI calls (select method, create payment mandate, fetch one-time credentials, report result). Kit 09 places real orders with an Airwallex-issued card, so this needs Raul's go-ahead. |
+| Airwallex sandbox REST | `createAirwallexSandboxAdapter` written (login, `pa/payment_intents/create`, `confirm`) but never run | Sandbox account at sandbox.airwallex.com, set `AWX_CLIENT_ID`, `AWX_API_KEY` and `AWX_TEST_CARD_NUMBER` (the sandbox test card from the guide). Verify field names with the Airwallex docs MCP before relying on it. |
+| Metal USDZ | `createMockMetalClient`: in-memory USDZ balances, 18 decimals, chain 63825, token `0x000000000000000000000000000000000000b5d5`, instant finality | When Metal testnet billing is back: create an RPC endpoint in the Metal console, fund a key with test USDZ from the faucet, `pnpm add @metalntwx/metal-ts@0.3.2 viem@2.57.7`, set `METAL_RPC_URL` and `METAL_PAYER_KEY` (never committed), and implement `createMetalTestnetClient` (`balanceOf`, `transfer`, wait for finalized receipt). |
+| Visa key directory | Local map of trusted agent keys | Visa Intelligent Commerce onboarding and the Visa-hosted well-known key URL. |
+| Merchant | Local demo merchant with a synthetic catalog | Kit 09 targets real merchant sites through browser automation; the TAP and TPA checks stay the same. |
+| Passkey | Synthetic authenticator with real P-256 keys and real WebAuthn verification | Use `client-reference/tpa-client.ts` in a browser with a real platform authenticator. |
+| TPA store | Demo in-memory port (`scripts/demo/memory-store.ts`) | The MySQL store in `src/store.ts`. |
 
 ## Scope exclusions and operator decisions
 
