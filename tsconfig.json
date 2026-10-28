@@ -17,7 +17,8 @@
     "client-reference/**/*.ts",
     "examples/**/*.ts",
     "tests/**/*.ts",
-    "scripts/**/*.ts"
+    "scripts/**/*.ts",
+    "shopper/**/*.ts"
   ],
   "exclude": [
     "node_modules",
