@@ -63,7 +63,7 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   const env = options.env ?? process.env;
   const metalSelection = selectMetalClient({ env: options.metal === "mock" ? {} : env, mockPayer: SHOPPER_PAYER_METAL_ADDRESS, mockBalance: 500n * 10n ** 18n });
   const metal = metalSelection.client;
-  const merchantMetalAddress = (metalSelection.live && env.METAL_MERCHANT_ADDRESS) || DEMO_MERCHANT_METAL_ADDRESS;
+  const merchantMetalAddress = (metalSelection.live && metalSelection.merchantAddress) || DEMO_MERCHANT_METAL_ADDRESS;
   const rails: Record<"airwallex" | "metal", PaymentAdapter> = {
     airwallex: createMockAiriAdapter(),
     // TPA checks (Proof of Person via passkey, Presence via TAP, Permission via mandate consume) all run before rail.pay().
@@ -147,6 +147,6 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     return { firstStatus: first.status, replay: { status: replay.status, ...(await replay.json() as { reason?: string }) }, unsigned: { status: unsigned.status, ...(await unsigned.json() as { reason?: string }) } };
   }
 
-  return { shop, replayCapturedCheckout, service, ctx, merchant, rails, metal, metalSelection: { live: metalSelection.live, payer: metalSelection.payer, reason: metalSelection.reason }, agentTap, auditLog: (intentId?: string) => service.auditLog(ctx, { intentId, limit: 50 }), close: () => merchant.close() };
+  return { shop, replayCapturedCheckout, service, ctx, merchant, rails, metal, metalSelection: { live: metalSelection.live, payer: metalSelection.payer, merchant: merchantMetalAddress, reason: metalSelection.reason }, agentTap, auditLog: (intentId?: string) => service.auditLog(ctx, { intentId, limit: 50 }), close: () => merchant.close() };
 }
 export type ShopperRig = Awaited<ReturnType<typeof createShopperRig>>;

@@ -43,6 +43,14 @@ describe("Metal live/mock selection", () => {
     expect(JSON.stringify(s)).not.toContain(FAKE_KEY.slice(2));
   });
 
+  it("takes a non-secret METAL_MERCHANT_ADDRESS default and rejects a malformed one", () => {
+    const env = { METAL_LIVE: "1", METAL_RPC_URL: FAKE_URL, METAL_PAYER_KEY: FAKE_KEY };
+    const ok = selectMetalClient({ ...base, env: { ...env, METAL_MERCHANT_ADDRESS: "0x692519584dee2d0a9c88782d8cf3b46d46f817ee" }, files: [] });
+    expect(ok.merchantAddress).toBe("0x692519584DEE2D0A9C88782d8cF3B46d46f817EE");
+    const bad = selectMetalClient({ ...base, env: { ...env, METAL_MERCHANT_ADDRESS: "0xnope" }, files: [] });
+    expect(bad).toMatchObject({ live: false, reason: expect.stringContaining("METAL_MERCHANT_ADDRESS is malformed") });
+  });
+
   it("the live adapter still refuses to pay without a TPA consume receipt (no network call)", async () => {
     const s = selectMetalClient({ ...base, env: { METAL_LIVE: "1", METAL_RPC_URL: FAKE_URL, METAL_PAYER_KEY: FAKE_KEY }, files: [] });
     const adapter = createMetalUsdzAdapter(s.client, s.payer, { m: "0x00000000000000000000000000000000000ba5e1" });

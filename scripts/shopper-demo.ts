@@ -58,10 +58,11 @@ async function main() {
 
     const happy = await scenario("1. Happy path: agent buys, owner approves, paid via Airwallex (mock Airi)", "PAID", () => rig.shop(intent));
     if (happy.quote) say(dim(`  Approved cart: ${happy.quote.items.map(i => `${i.qty} x ${i.sku} @ $${(Number(i.unitPriceBaseUnits) / 100).toFixed(2)}`).join(", ")}\n`));
-    say(dim(`  Metal rail: ${rig.metalSelection.live ? `LIVE alta-testnet, payer ${rig.metalSelection.payer}` : `mock (${rig.metalSelection.reason})`}`));
-    await scenario(`2. Same cart paid in USDZ on Metal (${rig.metalSelection.live ? "LIVE alta-testnet" : "mock testnet"}, chain 63825)`, "PAID", () => rig.shop({ ...intent, rail: "metal",
+    say(dim(`  Metal rail: ${rig.metalSelection.live ? `LIVE alta-testnet, payer ${rig.metalSelection.payer} -> merchant ${rig.metalSelection.merchant}` : `mock (${rig.metalSelection.reason})`}`));
+    const metalRun = await scenario((rig.metalSelection.live ? "2. Smaller cart paid in USDZ on Metal (LIVE alta-testnet, chain 63825)" : "2. Same cart paid in USDZ on Metal (mock testnet, chain 63825)"), "PAID", () => rig.shop({ ...intent, rail: "metal",
       // Live: the faucet tops up to 100 USDZ, less than this $113 cart, so the live run uses a smaller budget (default $50).
       ...(rig.metalSelection.live ? { budgetCents: Number(process.env.METAL_DEMO_BUDGET_CENTS ?? 5_000) } : {}) }));
+    if (rig.metalSelection.live && metalRun.payment) say(dim(`  Metal tx ${metalRun.payment.reference} (${Object.entries(metalRun.payment.detail).map(([k, v]) => `${k}=${v}`).join(", ")})\n`));
 
     rig.merchant.setAttack("price_swap");
     await scenario("Attack A: merchant raises a price after the owner approved", "BLOCKED", () => rig.shop(intent));

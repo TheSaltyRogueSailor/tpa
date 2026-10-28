@@ -36,7 +36,7 @@ export function parseEnvFile(text: string): Record<string, string> {
   return out;
 }
 /** Process env wins over the gitignored files, so CI/shell can override. Files are only read when asked. */
-export function loadMetalEnv(env: NodeJS.ProcessEnv = process.env, files = [".env.metal", ".env.metal-wallet"]): Record<string, string | undefined> {
+export function loadMetalEnv(env: NodeJS.ProcessEnv = process.env, files = [".env.metal", ".env.metal-wallet", ".env.metal-demo"]): Record<string, string | undefined> {
   const merged: Record<string, string | undefined> = {};
   for (const f of files) if (existsSync(f)) Object.assign(merged, parseEnvFile(readFileSync(f, "utf8")));
   for (const [k, v] of Object.entries(env)) if (v !== undefined && v !== "") merged[k] = v;
@@ -142,10 +142,11 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
 }
 
 /* --------------------------------- selection --------------------------------- */
-export type MetalSelection = { client: MetalClient; payer: string; live: boolean; reason: string };
+export type MetalSelection = { client: MetalClient; payer: string; live: boolean; reason: string; merchantAddress?: string };
 /**
  * METAL_LIVE=1 + METAL_RPC_URL + METAL_PAYER_KEY -> real alta-testnet client. Anything missing -> mock, with the
- * reason (never a secret value). The gitignored .env.metal / .env.metal-wallet files are only read when the flag is on.
+ * reason (never a secret value). The gitignored .env.metal / .env.metal-wallet / .env.metal-demo files are only read
+ * when the flag is on. .env.metal-demo holds non-secret defaults such as METAL_MERCHANT_ADDRESS.
  */
 export function selectMetalClient(options: { env?: NodeJS.ProcessEnv; files?: string[]; mockPayer: string; mockBalance: bigint }): MetalSelection {
   const env = options.env ?? process.env;
@@ -157,5 +158,9 @@ export function selectMetalClient(options: { env?: NodeJS.ProcessEnv; files?: st
   if (!/^0x[0-9a-fA-F]{64}$/.test(cfg.METAL_PAYER_KEY)) return mock("METAL_LIVE=1 but METAL_PAYER_KEY is malformed");
   try { new URL(cfg.METAL_RPC_URL); } catch { return mock("METAL_LIVE=1 but METAL_RPC_URL is malformed"); }
   const client = createMetalTestnetClient({ rpcUrl: cfg.METAL_RPC_URL, apiKey: cfg.METAL_API_KEY, payerKey: cfg.METAL_PAYER_KEY as Hex });
-  return { client, payer: client.payer, live: true, reason: "METAL_LIVE=1 with RPC URL and payer key" };
+  let merchantAddress: string | undefined;
+  if (cfg.METAL_MERCHANT_ADDRESS) {
+    try { merchantAddress = getAddress(cfg.METAL_MERCHANT_ADDRESS); } catch { return mock("METAL_LIVE=1 but METAL_MERCHANT_ADDRESS is malformed"); }
+  }
+  return { client, payer: client.payer, live: true, reason: "METAL_LIVE=1 with RPC URL and payer key", merchantAddress };
 }
