@@ -6,6 +6,18 @@
     "rootDir": ".",
     "outDir": "./.demo-build"
   },
-  "include": ["src/**/*.ts", "tests/support/authenticator.ts", "scripts/redteam-demo.ts", "scripts/demo/**/*.ts"],
-  "exclude": ["node_modules", "dist", "ledger", ".demo-build"]
+  "include": [
+    "src/**/*.ts",
+    "tests/support/authenticator.ts",
+    "scripts/redteam-demo.ts",
+    "scripts/demo/**/*.ts",
+    "scripts/shopper-demo.ts",
+    "shopper/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "ledger",
+    ".demo-build"
+  ]
 }
