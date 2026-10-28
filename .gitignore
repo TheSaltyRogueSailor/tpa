@@ -15,3 +15,6 @@ cache/
 *.pem
 *.key
 *.b64
+
+# TPA Shopper local demo keys (agent TAP key)
+.shopper-keys/
