@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { tpaCeremonies, tpaCredentials, tpaIntents } from "./schema.js";
 import type { TpaHostAdapter } from "./host/contracts.js";
-import { TPA_CEREMONY_TTL_MS, TPA_TTL_SECONDS, canonicalTpaMandate, tpaMandateSchema, type TpaMandate } from "./domain.js";
+import { TPA_CEREMONY_TTL_MS, TPA_TTL_SECONDS, canonicalTpaMandate, isCheckoutMandate, tpaMandateSchema, type TpaMandate } from "./domain.js";
 
 const MAX_ACTIVE_CREDENTIALS = 3;
 const MAX_NEW_CEREMONIES_PER_MINUTE = 10;
@@ -15,6 +15,7 @@ const BASE64URL_ID = /^[A-Za-z0-9_-]{1,1364}$/;
 type Tx = any;
 type StoreInput = { host: TpaHostAdapter };
 type CeremonyKind = "registration" | "authorization";
+type TrustedNow = number | (() => number);
 
 export class TpaStoreError extends Error {
   constructor(readonly kind: "unavailable" | "rate" | "ceremony" | "intent" | "credential" | "integrity") {
@@ -41,6 +42,32 @@ export type TpaIntentPublic = {
   revokedAtMs: number | null;
   authorizedCredentialIdHash: string | null;
 };
+
+/**
+ * A callback executed inside the store transaction after the owner and intent
+ * row are locked. It is intentionally generic: evidence persistence can share
+ * the exact SQL transaction without the lifecycle store importing it.
+ */
+export type TpaIntentLifecycleHook = (intent: TpaIntentPublic, transaction: unknown) => Promise<void>;
+
+/** A callback committed with a newly registered credential. */
+export type TpaCredentialLifecycleHook = (credential: TpaCredentialPublic, transaction: unknown) => Promise<void>;
+
+class TpaStoreHookError extends Error {
+  constructor(readonly original: unknown) { super("lifecycle hook refused"); }
+}
+
+async function invokeIntentHook(hook: TpaIntentLifecycleHook | undefined, intent: TpaIntentPublic, transaction: Tx): Promise<void> {
+  if (!hook) return;
+  try { await hook(intent, transaction); }
+  catch (error) { throw new TpaStoreHookError(error); }
+}
+
+async function invokeCredentialHook(hook: TpaCredentialLifecycleHook | undefined, credential: TpaCredentialPublic, transaction: Tx): Promise<void> {
+  if (!hook) return;
+  try { await hook(credential, transaction); }
+  catch (error) { throw new TpaStoreHookError(error); }
+}
 
 type CredentialPrivate = {
   credentialIdHash: string;
@@ -77,8 +104,8 @@ function affectedRows(result: unknown): number {
   return typeof value === "number" ? value : Number(value ?? 0);
 }
 
-function nowMs(value?: number): number {
-  const now = value ?? Date.now();
+function nowMs(value?: TrustedNow): number {
+  const now = typeof value === "function" ? value() : value ?? Date.now();
   if (!Number.isSafeInteger(now) || now < 0) throw new TpaStoreError("unavailable");
   return now;
 }
@@ -288,7 +315,7 @@ async function consumeCeremony(input: StoreInput & {
   ceremonyId: string;
   kind: CeremonyKind;
   intentId?: string;
-  now?: number;
+  now?: TrustedNow;
 }): Promise<Ceremony> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.ceremonyId);
@@ -332,7 +359,9 @@ async function createCeremony(input: StoreInput & {
   kind: CeremonyKind;
   intentId?: string;
   label?: string;
-  now?: number;
+  now?: TrustedNow;
+  /** Authorization-only work committed with the new ceremony and locked intent. */
+  onIntentLocked?: TpaIntentLifecycleHook;
 }): Promise<{ ceremonyId: string; expiresAtMs: number; credentialIds: Array<{ id: string; transports: string[] }>; intent?: TpaIntentPublic }> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.id);
@@ -364,6 +393,10 @@ async function createCeremony(input: StoreInput & {
         // after that wait, rather than at transaction entry.
         assertLive(intent, nowMs(input.now), "pending");
         if (active.length === 0) throw new TpaStoreError("credential");
+        // Checkout mandates have no trusted unsigned lifecycle. Callers outside
+        // the service must supply the hook that verifies evidence and persists
+        // the ceremony-to-mandate challenge binding in this transaction.
+        if (isCheckoutMandate(intent.mandate) && !input.onIntentLocked) throw new TpaStoreError("integrity");
       }
       const currentAfterLocks = nowMs(input.now);
       const expiresAtMs = currentAfterLocks + TPA_CEREMONY_TTL_MS;
@@ -379,6 +412,14 @@ async function createCeremony(input: StoreInput & {
         expiresAtMs,
         createdAtMs: currentAfterLocks,
       });
+      // The intent remains locked after lockedIntent(); binding persistence and
+      // signature verification therefore share this ceremony transaction.
+      if (intent) await invokeIntentHook(input.onIntentLocked, intent, tx);
+      // Evidence hooks can await I/O. Re-sample the trusted clock before commit
+      // so an expired intent cannot leave an orphaned ceremony or binding.
+      const currentBeforeCommit = nowMs(input.now);
+      if (intent) assertLive(intent, currentBeforeCommit, "pending");
+      if (expiresAtMs <= currentBeforeCommit) throw new TpaStoreError("ceremony");
       return {
         ceremonyId: input.id,
         expiresAtMs,
@@ -387,19 +428,20 @@ async function createCeremony(input: StoreInput & {
       };
     });
   } catch (error) {
+    if (error instanceof TpaStoreHookError) throw error.original;
     if (error instanceof TpaStoreError) throw error;
     throw new TpaStoreError("unavailable");
   }
 }
 
 export async function startRegistration(input: StoreInput & {
-  userId: number; sessionHash: string; origin: string; ceremonyId: string; challenge: string; label: string; now?: number;
+  userId: number; sessionHash: string; origin: string; ceremonyId: string; challenge: string; label: string; now?: TrustedNow;
 }) {
   return createCeremony({ ...input, id: input.ceremonyId, kind: "registration" });
 }
 
 export async function startAuthorization(input: StoreInput & {
-  userId: number; sessionHash: string; origin: string; ceremonyId: string; challenge: string; intentId: string; now?: number;
+  userId: number; sessionHash: string; origin: string; ceremonyId: string; challenge: string; intentId: string; now?: TrustedNow; onIntentLocked?: TpaIntentLifecycleHook;
 }) {
   return createCeremony({ ...input, id: input.ceremonyId, kind: "authorization" });
 }
@@ -423,11 +465,11 @@ export async function getCredentialForAuthentication(input: StoreInput & { userI
   }
 }
 
-export async function consumeRegistrationCeremony(input: StoreInput & { userId: number; sessionHash: string; origin: string; ceremonyId: string; now?: number }) {
+export async function consumeRegistrationCeremony(input: StoreInput & { userId: number; sessionHash: string; origin: string; ceremonyId: string; now?: TrustedNow }) {
   return consumeCeremony({ ...input, kind: "registration" });
 }
 
-export async function consumeAuthorizationCeremony(input: StoreInput & { userId: number; sessionHash: string; origin: string; ceremonyId: string; intentId: string; now?: number }) {
+export async function consumeAuthorizationCeremony(input: StoreInput & { userId: number; sessionHash: string; origin: string; ceremonyId: string; intentId: string; now?: TrustedNow }) {
   return consumeCeremony({ ...input, kind: "authorization", intentId: input.intentId });
 }
 
@@ -443,7 +485,8 @@ export async function saveVerifiedCredential(input: StoreInput & {
   label: string;
   deviceType: string;
   backedUp: boolean;
-  now?: number;
+  now?: TrustedNow;
+  afterSave?: TpaCredentialLifecycleHook;
 }): Promise<TpaCredentialPublic> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.ceremonyId);
@@ -500,7 +543,13 @@ export async function saveVerifiedCredential(input: StoreInput & {
         backedUp: input.backedUp,
         createdAtMs: current,
       });
-      return { credentialIdHash: digest, label: input.label, createdAtMs: current, revokedAtMs: null };
+      const saved = { credentialIdHash: digest, label: input.label, createdAtMs: current, revokedAtMs: null };
+      // Credential evidence is complete only when its approval audit commits in
+      // the same transaction. A hook failure rolls back both the credential and
+      // the ceremony completion claim.
+      await invokeCredentialHook(input.afterSave, saved, tx);
+      if (ceremony.expiresAtMs <= nowMs(input.now)) throw new TpaStoreError("ceremony");
+      return saved;
     });
   } catch (error) {
     if (error instanceof TpaStoreError) throw error;
@@ -509,7 +558,7 @@ export async function saveVerifiedCredential(input: StoreInput & {
 }
 
 export async function createIntent(input: StoreInput & {
-  userId: number; sessionHash: string; origin: string; id: string; mandate: TpaMandate; now?: number;
+  userId: number; sessionHash: string; origin: string; id: string; mandate: TpaMandate; now?: TrustedNow; afterCreate?: TpaIntentLifecycleHook;
 }): Promise<TpaIntentPublic> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.id);
@@ -519,6 +568,11 @@ export async function createIntent(input: StoreInput & {
   const mandateHash = sha256(canonical);
   const current = nowMs(input.now);
   if (mandate.issuerUserId !== input.userId) throw new TpaStoreError("intent");
+  // Version 3 checkout intents must not be created through an unsigned raw
+  // lifecycle path. The service hook atomically saves the server signature and
+  // its creation audit. Legacy v2 remains intentionally available to the
+  // explicit compatibility mode in the service.
+  if (isCheckoutMandate(mandate) && !input.afterCreate) throw new TpaStoreError("integrity");
   const expiresAtMs = assertMandateTimeBounds(mandate, current);
   try {
     const db = await database(input.host);
@@ -556,12 +610,18 @@ export async function createIntent(input: StoreInput & {
         createdAtMs: currentAfterLocks,
         expiresAtMs: expiresAtMsAfterLocks,
       });
-      return {
-        id: input.id, mandate, mandateHash, state: "pending", createdAtMs: currentAfterLocks,
-        expiresAtMs, authorizedAtMs: null, consumedAtMs: null, revokedAtMs: null, authorizedCredentialIdHash: null,
+      const created = {
+        id: input.id, mandate, mandateHash, state: "pending" as const, createdAtMs: currentAfterLocks,
+        expiresAtMs: expiresAtMsAfterLocks, authorizedAtMs: null, consumedAtMs: null, revokedAtMs: null, authorizedCredentialIdHash: null,
       };
+      // A signature and its durable creation audit must commit with the row; a
+      // refusal here rolls the insert back and leaves neither orphan behind.
+      await invokeIntentHook(input.afterCreate, created, tx);
+      assertMandateTimeBounds(mandate, nowMs(input.now));
+      return created;
     });
   } catch (error) {
+    if (error instanceof TpaStoreHookError) throw error.original;
     if (error instanceof TpaStoreError) throw error;
     throw new TpaStoreError("unavailable");
   }
@@ -574,7 +634,9 @@ export async function finalizeAuthorization(input: StoreInput & {
   intentId: string;
   credentialId: string;
   newCounter: number;
-  now?: number;
+  now?: TrustedNow;
+  beforeFinalize?: TpaIntentLifecycleHook;
+  afterFinalize?: TpaIntentLifecycleHook;
 }): Promise<TpaIntentPublic> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.intentId);
@@ -595,26 +657,41 @@ export async function finalizeAuthorization(input: StoreInput & {
       if (!credential || credential.userId !== input.userId || credential.revokedAtMs !== null || credential.credentialId !== input.credentialId || ((input.newCounter > 0 || credential.counter > 0) && input.newCounter <= credential.counter)) {
         throw new TpaStoreError("credential");
       }
+      if (isCheckoutMandate(intent.mandate) && (!input.beforeFinalize || !input.afterFinalize)) throw new TpaStoreError("integrity");
+      // Evidence verification uses this locked, authoritative pending snapshot;
+      // no stale pre-transaction read can approve a modified mandate.
+      await invokeIntentHook(input.beforeFinalize, intent, tx);
+      const currentBeforeTransition = nowMs(input.now);
+      assertLive(intent, currentBeforeTransition, "pending");
       const counter = await tx.update(tpaCredentials).set({ counter: input.newCounter }).where(and(
         eq(tpaCredentials.credentialIdHash, credentialHash), eq(tpaCredentials.userId, input.userId), isNull(tpaCredentials.revokedAtMs),
       ));
       if (affectedRows(counter) !== 1 && input.newCounter !== credential.counter) throw new TpaStoreError("credential");
       const authorization = await tx.update(tpaIntents).set({
-        state: "authorized", authorizedCredentialIdHash: credentialHash, authorizedAtMs: current,
+        state: "authorized", authorizedCredentialIdHash: credentialHash, authorizedAtMs: currentBeforeTransition,
       }).where(and(
         eq(tpaIntents.id, input.intentId), eq(tpaIntents.userId, input.userId), eq(tpaIntents.sessionHash, input.sessionHash), eq(tpaIntents.origin, input.origin),
-        eq(tpaIntents.state, "pending"), gt(tpaIntents.expiresAtMs, current),
+        eq(tpaIntents.state, "pending"), gt(tpaIntents.expiresAtMs, currentBeforeTransition),
       ));
       if (affectedRows(authorization) !== 1) throw new TpaStoreError("intent");
-      return { ...intent, state: "authorized", authorizedCredentialIdHash: credentialHash, authorizedAtMs: current };
+      const authorized = { ...intent, state: "authorized" as const, authorizedCredentialIdHash: credentialHash, authorizedAtMs: currentBeforeTransition };
+      // Fail closed before commit if the durable approval trail cannot be written.
+      await invokeIntentHook(input.afterFinalize, authorized, tx);
+      if (intent.expiresAtMs <= nowMs(input.now)) throw new TpaStoreError("intent");
+      return authorized;
     });
   } catch (error) {
+    if (error instanceof TpaStoreHookError) throw error.original;
     if (error instanceof TpaStoreError) throw error;
     throw new TpaStoreError("unavailable");
   }
 }
 
-export async function consumeIntent(input: StoreInput & { userId: number; sessionHash: string; origin: string; intentId: string; now?: number }): Promise<TpaIntentPublic> {
+export async function consumeIntent(input: StoreInput & {
+  userId: number; sessionHash: string; origin: string; intentId: string; now?: TrustedNow;
+  beforeConsume?: TpaIntentLifecycleHook;
+  afterConsume?: TpaIntentLifecycleHook;
+}): Promise<TpaIntentPublic> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.intentId);
   try {
@@ -631,20 +708,33 @@ export async function consumeIntent(input: StoreInput & { userId: number; sessio
       const current = nowMs(input.now);
       assertLive(intent, current, "authorized");
       if (!credential || credential.userId !== input.userId || credential.revokedAtMs !== null) throw new TpaStoreError("credential");
-      const consumed = await tx.update(tpaIntents).set({ state: "consumed", consumedAtMs: current }).where(and(
+      if (isCheckoutMandate(intent.mandate) && (!input.beforeConsume || !input.afterConsume)) throw new TpaStoreError("integrity");
+      // Verify signature/hash/checkout and record the use attempt while this
+      // authorized intent is locked, before any state transition can commit.
+      await invokeIntentHook(input.beforeConsume, intent, tx);
+      const currentBeforeTransition = nowMs(input.now);
+      assertLive(intent, currentBeforeTransition, "authorized");
+      const consumed = await tx.update(tpaIntents).set({ state: "consumed", consumedAtMs: currentBeforeTransition }).where(and(
         eq(tpaIntents.id, input.intentId), eq(tpaIntents.userId, input.userId), eq(tpaIntents.sessionHash, input.sessionHash), eq(tpaIntents.origin, input.origin),
-        eq(tpaIntents.state, "authorized"), gt(tpaIntents.expiresAtMs, current), eq(tpaIntents.authorizedCredentialIdHash, intent.authorizedCredentialIdHash),
+        eq(tpaIntents.state, "authorized"), gt(tpaIntents.expiresAtMs, currentBeforeTransition), eq(tpaIntents.authorizedCredentialIdHash, intent.authorizedCredentialIdHash),
       ));
       if (affectedRows(consumed) !== 1) throw new TpaStoreError("intent");
-      return { ...intent, state: "consumed", consumedAtMs: current };
+      const used = { ...intent, state: "consumed" as const, consumedAtMs: currentBeforeTransition };
+      await invokeIntentHook(input.afterConsume, used, tx);
+      if (intent.expiresAtMs <= nowMs(input.now)) throw new TpaStoreError("intent");
+      return used;
     });
   } catch (error) {
+    if (error instanceof TpaStoreHookError) throw error.original;
     if (error instanceof TpaStoreError) throw error;
     throw new TpaStoreError("unavailable");
   }
 }
 
-export async function revokeIntent(input: StoreInput & { userId: number; sessionHash: string; origin: string; intentId: string; now?: number }): Promise<TpaIntentPublic> {
+export async function revokeIntent(input: StoreInput & {
+  userId: number; sessionHash: string; origin: string; intentId: string; now?: TrustedNow;
+  afterRevoke?: TpaIntentLifecycleHook;
+}): Promise<TpaIntentPublic> {
   assertBound(input.userId, input.sessionHash, input.origin);
   assertId(input.intentId);
   try {
@@ -662,15 +752,21 @@ export async function revokeIntent(input: StoreInput & { userId: number; session
         ne(tpaIntents.state, "consumed"), ne(tpaIntents.state, "revoked"),
       ));
       if (affectedRows(revoked) !== 1) throw new TpaStoreError("intent");
-      return { ...intent, state: "revoked", revokedAtMs: current };
+      const revokedIntent = { ...intent, state: "revoked" as const, revokedAtMs: current };
+      // Revocation remains available without signature verification or a required
+      // audit hook: incident containment must not depend on audit availability.
+      // A caller may still supply an atomic hook for a stricter deployment.
+      await invokeIntentHook(input.afterRevoke, revokedIntent, tx);
+      return revokedIntent;
     });
   } catch (error) {
+    if (error instanceof TpaStoreHookError) throw error.original;
     if (error instanceof TpaStoreError) throw error;
     throw new TpaStoreError("unavailable");
   }
 }
 
-export async function revokeCredential(input: StoreInput & { userId: number; credentialIdHash: string; now?: number }): Promise<TpaCredentialPublic> {
+export async function revokeCredential(input: StoreInput & { userId: number; credentialIdHash: string; now?: TrustedNow }): Promise<TpaCredentialPublic> {
   if (!HEX_64.test(input.credentialIdHash)) throw new TpaStoreError("credential");
   try {
     const db = await database(input.host);
@@ -684,6 +780,32 @@ export async function revokeCredential(input: StoreInput & { userId: number; cre
       ));
       if (affectedRows(revoked) !== 1) throw new TpaStoreError("credential");
       return { credentialIdHash: credential.credentialIdHash, label: credential.label, createdAtMs: credential.createdAtMs, revokedAtMs: current };
+    });
+  } catch (error) {
+    if (error instanceof TpaStoreError) throw error;
+    throw new TpaStoreError("unavailable");
+  }
+}
+
+/**
+ * Direct exact-session lookup for service preflight only. This deliberately is
+ * not the status listing: a mandate outside its display pagination window must
+ * still be found (and then evaluated under locks by the transition itself).
+ */
+export async function readIntent(input: StoreInput & { userId: number; sessionHash: string; origin: string; intentId: string }): Promise<TpaIntentPublic | null> {
+  assertBound(input.userId, input.sessionHash, input.origin);
+  if (!ID_64.test(input.intentId)) return null;
+  try {
+    const db = await database(input.host);
+    return await db.transaction(async (tx: Tx) => {
+      await lockOwner(input.host, tx, input.userId);
+      const [row] = await tx.select(intentFields()).from(tpaIntents).where(and(
+        eq(tpaIntents.id, input.intentId),
+        eq(tpaIntents.userId, input.userId),
+        eq(tpaIntents.sessionHash, input.sessionHash),
+        eq(tpaIntents.origin, input.origin),
+      )).limit(1);
+      return row ? assertBoundIntent(row, input.userId, input.sessionHash, input.origin) : null;
     });
   } catch (error) {
     if (error instanceof TpaStoreError) throw error;
@@ -728,6 +850,7 @@ export function createTpaStore(host: TpaHostAdapter) {
     consumeIntent: (input: Omit<Parameters<typeof consumeIntent>[0], "host">) => consumeIntent({ ...input, host }),
     revokeIntent: (input: Omit<Parameters<typeof revokeIntent>[0], "host">) => revokeIntent({ ...input, host }),
     revokeCredential: (input: Omit<Parameters<typeof revokeCredential>[0], "host">) => revokeCredential({ ...input, host }),
+    readIntent: (input: Omit<Parameters<typeof readIntent>[0], "host">) => readIntent({ ...input, host }),
     tpaStatus: (input: Omit<Parameters<typeof tpaStatus>[0], "host">) => tpaStatus({ ...input, host }),
   };
 }

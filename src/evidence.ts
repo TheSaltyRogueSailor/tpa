@@ -36,6 +36,7 @@ export function createTpaEvidenceStore(host: TpaHostAdapter) {
     if (!database) throw new TpaEvidenceError("unavailable");
     return database;
   }
+  async function connection(transaction?: unknown): Promise<any> { return transaction ?? db(); }
   async function run<T>(operation: () => Promise<T>): Promise<T> {
     try { return await operation(); }
     catch (error) { if (error instanceof TpaEvidenceError) throw error; throw new TpaEvidenceError("unavailable"); }
@@ -43,9 +44,10 @@ export function createTpaEvidenceStore(host: TpaHostAdapter) {
 
   return {
     /** Read-only, integrity-checked intent for pre-checks. Owner and origin bound; null when absent. */
-    readIntent: (input: { userId: number; origin: string; intentId: string }) => run(async (): Promise<TpaIntentPublic | null> => {
+    readIntent: (input: { userId: number; origin: string; intentId: string; transaction?: unknown; forUpdate?: boolean }) => run(async (): Promise<TpaIntentPublic | null> => {
       if (!HEX_64.test(input.intentId)) return null;
-      const [row] = await (await db()).select().from(tpaIntents).where(and(eq(tpaIntents.id, input.intentId), eq(tpaIntents.userId, input.userId), eq(tpaIntents.origin, input.origin))).limit(1);
+      const query = (await connection(input.transaction)).select().from(tpaIntents).where(and(eq(tpaIntents.id, input.intentId), eq(tpaIntents.userId, input.userId), eq(tpaIntents.origin, input.origin))).limit(1);
+      const [row] = input.forUpdate ? await query.for("update") : await query;
       if (!row) return null;
       let mandate;
       try { mandate = tpaMandateSchema.parse(JSON.parse(row.mandateJson)); } catch { throw new TpaEvidenceError("integrity"); }
@@ -59,27 +61,36 @@ export function createTpaEvidenceStore(host: TpaHostAdapter) {
       };
     }),
 
-    saveSignature: (input: TpaStoredSignature) => run(async () => { await (await db()).insert(tpaMandateSignatures).values(input); }),
+    saveSignature: (input: TpaStoredSignature & { transaction?: unknown }) => run(async () => {
+      const { transaction, ...signature } = input;
+      await (await connection(transaction)).insert(tpaMandateSignatures).values(signature);
+    }),
 
-    getSignatures: (input: { userId: number; intentIds: string[] }) => run(async (): Promise<Map<string, TpaStoredSignature>> => {
+    getSignatures: (input: { userId: number; intentIds: string[]; transaction?: unknown; forUpdate?: boolean }) => run(async (): Promise<Map<string, TpaStoredSignature>> => {
       const ids = input.intentIds.filter(id => HEX_64.test(id));
       if (ids.length === 0) return new Map();
-      const rows = await (await db()).select().from(tpaMandateSignatures).where(and(eq(tpaMandateSignatures.userId, input.userId), inArray(tpaMandateSignatures.intentId, ids)));
+      const query = (await connection(input.transaction)).select().from(tpaMandateSignatures).where(and(eq(tpaMandateSignatures.userId, input.userId), inArray(tpaMandateSignatures.intentId, ids)));
+      const rows = input.forUpdate ? await query.for("update") : await query;
       return new Map(rows.map((row: any) => [row.intentId, { ...row, userId: Number(row.userId), createdAtMs: Number(row.createdAtMs) }]));
     }),
 
-    saveChallengeBinding: (input: TpaChallengeBinding) => run(async () => { await (await db()).insert(tpaChallengeBindings).values(input); }),
+    saveChallengeBinding: (input: TpaChallengeBinding & { transaction?: unknown }) => run(async () => {
+      const { transaction, ...binding } = input;
+      await (await connection(transaction)).insert(tpaChallengeBindings).values(binding);
+    }),
 
-    getChallengeBinding: (input: { userId: number; ceremonyId: string }) => run(async (): Promise<TpaChallengeBinding | null> => {
+    getChallengeBinding: (input: { userId: number; ceremonyId: string; transaction?: unknown; forUpdate?: boolean }) => run(async (): Promise<TpaChallengeBinding | null> => {
       if (!HEX_64.test(input.ceremonyId)) return null;
-      const [row] = await (await db()).select().from(tpaChallengeBindings).where(and(eq(tpaChallengeBindings.ceremonyId, input.ceremonyId), eq(tpaChallengeBindings.userId, input.userId))).limit(1);
+      const query = (await connection(input.transaction)).select().from(tpaChallengeBindings).where(and(eq(tpaChallengeBindings.ceremonyId, input.ceremonyId), eq(tpaChallengeBindings.userId, input.userId))).limit(1);
+      const [row] = input.forUpdate ? await query.for("update") : await query;
       return row ? { ...row, userId: Number(row.userId), createdAtMs: Number(row.createdAtMs) } : null;
     }),
 
-    audit: (event: TpaAuditEvent) => run(async () => {
-      await (await db()).insert(tpaAuditEvents).values({
-        userId: event.userId, intentId: event.intentId && HEX_64.test(event.intentId) ? event.intentId : null, action: event.action.slice(0, 32),
-        outcome: event.outcome, reasonCode: event.reasonCode.slice(0, 48), mandateHash: event.mandateHash ?? null, keyId: event.keyId ?? null, atMs: event.atMs,
+    audit: (event: TpaAuditEvent & { transaction?: unknown }) => run(async () => {
+      const { transaction, ...auditEvent } = event;
+      await (await connection(transaction)).insert(tpaAuditEvents).values({
+        userId: auditEvent.userId, intentId: auditEvent.intentId && HEX_64.test(auditEvent.intentId) ? auditEvent.intentId : null, action: auditEvent.action.slice(0, 32),
+        outcome: auditEvent.outcome, reasonCode: auditEvent.reasonCode.slice(0, 48), mandateHash: auditEvent.mandateHash ?? null, keyId: auditEvent.keyId ?? null, atMs: auditEvent.atMs,
       });
     }),
 

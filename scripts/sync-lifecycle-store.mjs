@@ -17,6 +17,14 @@ if (!sourcePath) throw new Error("Usage: node scripts/sync-lifecycle-store.mjs /
 const here = dirname(fileURLToPath(import.meta.url));
 const outputPath = resolve(here, "../src/store.ts");
 let source = await readFile(resolve(sourcePath), "utf8");
+const existing = await readFile(outputPath, "utf8");
+// This extractor predates standalone v3 hardening. Never let an older upstream
+// file silently replace the local verification, transaction, or exact-read seam.
+if (existing.includes("TpaIntentLifecycleHook")) {
+  for (const marker of ["TpaIntentLifecycleHook", "afterCreate", "onIntentLocked", "beforeFinalize", "afterFinalize", "beforeConsume", "afterConsume", "afterSave", "export async function readIntent"]) {
+    if (!source.includes(marker)) throw new Error(`Refusing to erase standalone lifecycle hardening: missing ${marker}`);
+  }
+}
 for (const marker of ["export class TpaStoreError", "async function database()", "async function lockOwner", "export async function startRegistration", "export async function tpaStatus"]) {
   if (!source.includes(marker)) throw new Error(`Unsupported source: missing ${marker}`);
 }
@@ -37,6 +45,7 @@ if (source.includes("import { getDb }") || source.includes("isPersonalWalletOwne
   throw new Error("Transformation safety check failed; output was not written.");
 }
 const exported = ["startRegistration", "startAuthorization", "getCredentialForAuthentication", "consumeRegistrationCeremony", "consumeAuthorizationCeremony", "saveVerifiedCredential", "createIntent", "finalizeAuthorization", "consumeIntent", "revokeIntent", "revokeCredential", "tpaStatus"];
+if (source.includes("export async function readIntent")) exported.push("readIntent");
 source += `\n\n/** Binds the persistence operations to one explicit host adapter; no global database or auth singleton is used. */\nexport function createTpaStore(host: TpaHostAdapter) {\n  return {\n${exported.map(name => `    ${name}: (input: Omit<Parameters<typeof ${name}>[0], "host">) => ${name}({ ...input, host }),`).join("\n")}\n  };\n}\n\nexport type TpaStore = ReturnType<typeof createTpaStore>;\n`;
 await writeFile(outputPath, source, "utf8");
 console.log(`Wrote ${outputPath} from ${resolve(sourcePath)}; adapter and domain imports were isolated.`);

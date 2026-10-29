@@ -18,9 +18,9 @@
  * simulate an attacker who edits storage, exactly like the MySQL test suite does with UPDATE.
  */
 import { createHash } from "node:crypto";
-import { TPA_CEREMONY_TTL_MS, TPA_TTL_SECONDS, canonicalTpaMandate, tpaMandateSchema, type TpaMandate } from "../../src/domain.js";
+import { TPA_CEREMONY_TTL_MS, TPA_TTL_SECONDS, canonicalTpaMandate, isCheckoutMandate, tpaMandateSchema, type TpaMandate } from "../../src/domain.js";
 import { TpaEvidenceError, type TpaAuditRecord, type TpaChallengeBinding, type TpaEvidenceStore, type TpaStoredSignature } from "../../src/evidence.js";
-import { TpaStoreError, type TpaCredentialPublic, type TpaIntentPublic, type TpaStore } from "../../src/store.js";
+import { TpaStoreError, type TpaCredentialPublic, type TpaIntentLifecycleHook, type TpaIntentPublic, type TpaStore } from "../../src/store.js";
 
 const MAX_ACTIVE_CREDENTIALS = 3;
 const MAX_NEW_CEREMONIES_PER_MINUTE = 10;
@@ -28,6 +28,7 @@ const MAX_INTENTS_PER_DAY = 100;
 const DAY_MS = 86_400_000;
 const HEX_64 = /^[a-f0-9]{64}$/;
 const BASE64URL_ID = /^[A-Za-z0-9_-]{1,1364}$/;
+type TrustedNow = number | (() => number);
 const sha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
 type CredentialRow = { credentialIdHash: string; credentialId: string; publicKeyBase64: string; counter: number; transportsJson: string; label: string; deviceType: string; backedUp: boolean; createdAtMs: number; revokedAtMs: number | null; userId: number };
@@ -42,8 +43,37 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
   const signatures = new Map<string, TpaStoredSignature>();
   const bindings = new Map<string, TpaChallengeBinding>();
   const audit: TpaAuditRecord[] = [];
+  let lifecycleMutex = Promise.resolve();
 
-  const nowMs = (value?: number) => { const now = value ?? Date.now(); if (!Number.isSafeInteger(now) || now < 0) throw new TpaStoreError("unavailable"); return now; };
+  /**
+   * NON-PRODUCTION ONLY: the demo has no database transaction manager. Lifecycle
+   * hooks receive this opaque token and mutations are restored from a deep
+   * snapshot if any hook (including signature/binding/audit persistence) fails.
+   * Production uses locked MariaDB transactions in src/store.ts instead.
+   */
+  const syntheticTransaction = Object.freeze({ nonProduction: "memory-demo-transaction" });
+  function restoreMap<T>(target: Map<string, T>, source: Map<string, T>) {
+    target.clear();
+    for (const [key, value] of source) target.set(key, structuredClone(value));
+  }
+  async function lifecycleTransaction<T>(operation: (transaction: typeof syntheticTransaction) => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const prior = lifecycleMutex;
+    lifecycleMutex = new Promise(resolve => { release = resolve; });
+    await prior;
+    const snapshot = {
+      credentials: structuredClone(credentials), ceremonies: structuredClone(ceremonies), intents: structuredClone(intents),
+      signatures: structuredClone(signatures), bindings: structuredClone(bindings), audit: structuredClone(audit),
+    };
+    try { return await operation(syntheticTransaction); }
+    catch (error) {
+      restoreMap(credentials, snapshot.credentials); restoreMap(ceremonies, snapshot.ceremonies); restoreMap(intents, snapshot.intents);
+      restoreMap(signatures, snapshot.signatures); restoreMap(bindings, snapshot.bindings); audit.splice(0, audit.length, ...snapshot.audit);
+      throw error;
+    } finally { release(); }
+  }
+
+  const nowMs = (value?: TrustedNow) => { const now = typeof value === "function" ? value() : value ?? Date.now(); if (!Number.isSafeInteger(now) || now < 0) throw new TpaStoreError("unavailable"); return now; };
   const lockOwner = (userId: number) => { if (!owners.has(userId)) throw new TpaStoreError("unavailable"); };
   const assertBound = (userId: number, sessionHash: string, origin: string) => { if (!Number.isSafeInteger(userId) || userId < 1 || !HEX_64.test(sessionHash) || origin.length > 255) throw new TpaStoreError("unavailable"); };
   const assertId = (value: string) => { if (!HEX_64.test(value)) throw new TpaStoreError("unavailable"); };
@@ -68,7 +98,7 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
     return expiresAtMs;
   }
 
-  function createCeremony(input: { userId: number; sessionHash: string; origin: string; id: string; challenge: string; kind: CeremonyRow["kind"]; intentId?: string; label?: string; now?: number }) {
+  async function createCeremony(input: { userId: number; sessionHash: string; origin: string; id: string; challenge: string; kind: CeremonyRow["kind"]; intentId?: string; label?: string; now?: TrustedNow; onIntentLocked?: TpaIntentLifecycleHook }, transaction?: unknown) {
     assertBound(input.userId, input.sessionHash, input.origin);
     assertId(input.id);
     if (!/^[A-Za-z0-9_-]{32,128}$/.test(input.challenge) || (input.label !== undefined && (input.label.length < 1 || input.label.length > 64))) throw new TpaStoreError("unavailable");
@@ -85,14 +115,19 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       intent = assertBoundIntent(intents.get(input.intentId), input.userId, input.sessionHash, input.origin);
       assertLive(intent, current, "pending");
       if (active.length === 0) throw new TpaStoreError("credential");
+      if (isCheckoutMandate(intent.mandate) && !input.onIntentLocked) throw new TpaStoreError("integrity");
     }
     if (ceremonies.has(input.id)) throw new TpaStoreError("unavailable");
     const expiresAtMs = current + TPA_CEREMONY_TTL_MS;
     ceremonies.set(input.id, { id: input.id, userId: input.userId, sessionHash: input.sessionHash, origin: input.origin, kind: input.kind, challenge: input.challenge, intentId: input.intentId ?? null, label: input.label ?? null, expiresAtMs, createdAtMs: current, consumedAtMs: null, completedAtMs: null, registeredCredentialIdHash: null });
+    if (intent && input.onIntentLocked) await input.onIntentLocked(intent, transaction);
+    const currentBeforeCommit = nowMs(input.now);
+    if (intent) assertLive(intent, currentBeforeCommit, "pending");
+    if (expiresAtMs <= currentBeforeCommit) throw new TpaStoreError("ceremony");
     return { ceremonyId: input.id, expiresAtMs, credentialIds: active.map(c => ({ id: c.credentialId, transports: JSON.parse(c.transportsJson) as string[] })), intent };
   }
 
-  function consumeCeremony(input: { userId: number; sessionHash: string; origin: string; ceremonyId: string; kind: CeremonyRow["kind"]; intentId?: string; now?: number }) {
+  function consumeCeremony(input: { userId: number; sessionHash: string; origin: string; ceremonyId: string; kind: CeremonyRow["kind"]; intentId?: string; now?: TrustedNow }) {
     assertBound(input.userId, input.sessionHash, input.origin);
     assertId(input.ceremonyId);
     lockOwner(input.userId);
@@ -107,7 +142,7 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
 
   const store: TpaStore = {
     startRegistration: async input => createCeremony({ ...input, id: input.ceremonyId, kind: "registration" }),
-    startAuthorization: async input => createCeremony({ ...input, id: input.ceremonyId, kind: "authorization" }),
+    startAuthorization: async input => lifecycleTransaction(transaction => createCeremony({ ...input, id: input.ceremonyId, kind: "authorization" }, transaction)),
     consumeRegistrationCeremony: async input => consumeCeremony({ ...input, kind: "registration" }),
     consumeAuthorizationCeremony: async input => consumeCeremony({ ...input, kind: "authorization", intentId: input.intentId }),
     getCredentialForAuthentication: async input => {
@@ -116,7 +151,7 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       if (!row || row.userId !== input.userId || row.credentialId !== input.credentialId || row.revokedAtMs !== null) throw new TpaStoreError("credential");
       return { ...row };
     },
-    saveVerifiedCredential: async input => {
+    saveVerifiedCredential: async input => lifecycleTransaction(async transaction => {
       assertBound(input.userId, input.sessionHash, input.origin);
       assertId(input.ceremonyId);
       if (!BASE64URL_ID.test(input.credentialId) || !BASE64URL_ID.test(input.publicKeyBase64) || !Number.isSafeInteger(input.counter) || input.counter < 0 || input.label.length < 1 || input.label.length > 64 || input.deviceType.length > 32 || input.transports.length > 8) throw new TpaStoreError("credential");
@@ -130,9 +165,12 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       ceremony.completedAtMs = current;
       ceremony.registeredCredentialIdHash = digest;
       credentials.set(digest, { credentialIdHash: digest, userId: input.userId, credentialId: input.credentialId, publicKeyBase64: input.publicKeyBase64, counter: input.counter, transportsJson: JSON.stringify(input.transports), label: input.label, deviceType: input.deviceType, backedUp: input.backedUp, createdAtMs: current, revokedAtMs: null });
-      return { credentialIdHash: digest, label: input.label, createdAtMs: current, revokedAtMs: null };
-    },
-    createIntent: async input => {
+      const saved = { credentialIdHash: digest, label: input.label, createdAtMs: current, revokedAtMs: null };
+      if (input.afterSave) await input.afterSave(saved, transaction);
+      if (ceremony.expiresAtMs <= nowMs(input.now)) throw new TpaStoreError("ceremony");
+      return saved;
+    }),
+    createIntent: async input => lifecycleTransaction(async transaction => {
       assertBound(input.userId, input.sessionHash, input.origin);
       assertId(input.id);
       let mandate: TpaMandate;
@@ -140,6 +178,7 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       const mandateHash = sha256(canonicalTpaMandate(mandate));
       const current = nowMs(input.now);
       if (mandate.issuerUserId !== input.userId) throw new TpaStoreError("intent");
+      if (isCheckoutMandate(mandate) && !input.afterCreate) throw new TpaStoreError("integrity");
       const expiresAtMs = assertMandateTimeBounds(mandate, current);
       lockOwner(input.userId);
       const mine = [...intents.values()].filter(row => row.userId === input.userId);
@@ -149,9 +188,12 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       if (mine.filter(row => row.createdAtMs > current - DAY_MS).length >= MAX_INTENTS_PER_DAY) throw new TpaStoreError("rate");
       if (intents.has(input.id)) throw new TpaStoreError("unavailable");
       intents.set(input.id, { id: input.id, userId: input.userId, sessionHash: input.sessionHash, origin: input.origin, mandateJson: JSON.stringify(mandate), mandateHash, state: "pending", authorizedCredentialIdHash: null, createdAtMs: current, expiresAtMs, authorizedAtMs: null, consumedAtMs: null, revokedAtMs: null });
-      return { id: input.id, mandate, mandateHash, state: "pending", createdAtMs: current, expiresAtMs, authorizedAtMs: null, consumedAtMs: null, revokedAtMs: null, authorizedCredentialIdHash: null };
-    },
-    finalizeAuthorization: async input => {
+      const created = { id: input.id, mandate, mandateHash, state: "pending" as const, createdAtMs: current, expiresAtMs, authorizedAtMs: null, consumedAtMs: null, revokedAtMs: null, authorizedCredentialIdHash: null };
+      if (input.afterCreate) await input.afterCreate(created, transaction);
+      assertMandateTimeBounds(mandate, nowMs(input.now));
+      return created;
+    }),
+    finalizeAuthorization: async input => lifecycleTransaction(async transaction => {
       assertBound(input.userId, input.sessionHash, input.origin);
       assertId(input.intentId);
       if (!BASE64URL_ID.test(input.credentialId) || !Number.isSafeInteger(input.newCounter) || input.newCounter < 0) throw new TpaStoreError("credential");
@@ -163,11 +205,18 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       const current = nowMs(input.now);
       assertLive(intent, current, "pending");
       if (!credential || credential.userId !== input.userId || credential.revokedAtMs !== null || credential.credentialId !== input.credentialId || ((input.newCounter > 0 || credential.counter > 0) && input.newCounter <= credential.counter)) throw new TpaStoreError("credential");
+      if (isCheckoutMandate(intent.mandate) && (!input.beforeFinalize || !input.afterFinalize)) throw new TpaStoreError("integrity");
+      if (input.beforeFinalize) await input.beforeFinalize(intent, transaction);
+      const currentBeforeTransition = nowMs(input.now);
+      assertLive(intent, currentBeforeTransition, "pending");
       credential.counter = input.newCounter;
-      Object.assign(row!, { state: "authorized", authorizedCredentialIdHash: credentialHash, authorizedAtMs: current });
-      return { ...intent, state: "authorized", authorizedCredentialIdHash: credentialHash, authorizedAtMs: current };
-    },
-    consumeIntent: async input => {
+      Object.assign(row!, { state: "authorized", authorizedCredentialIdHash: credentialHash, authorizedAtMs: currentBeforeTransition });
+      const authorized = { ...intent, state: "authorized" as const, authorizedCredentialIdHash: credentialHash, authorizedAtMs: currentBeforeTransition };
+      if (input.afterFinalize) await input.afterFinalize(authorized, transaction);
+      if (intent.expiresAtMs <= nowMs(input.now)) throw new TpaStoreError("intent");
+      return authorized;
+    }),
+    consumeIntent: async input => lifecycleTransaction(async transaction => {
       assertBound(input.userId, input.sessionHash, input.origin);
       assertId(input.intentId);
       lockOwner(input.userId);
@@ -180,10 +229,17 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       const current = nowMs(input.now);
       assertLive(intent, current, "authorized");
       if (!credential || credential.userId !== input.userId || credential.revokedAtMs !== null) throw new TpaStoreError("credential");
-      Object.assign(row!, { state: "consumed", consumedAtMs: current });
-      return { ...intent, state: "consumed", consumedAtMs: current };
-    },
-    revokeIntent: async input => {
+      if (isCheckoutMandate(intent.mandate) && (!input.beforeConsume || !input.afterConsume)) throw new TpaStoreError("integrity");
+      if (input.beforeConsume) await input.beforeConsume(intent, transaction);
+      const currentBeforeTransition = nowMs(input.now);
+      assertLive(intent, currentBeforeTransition, "authorized");
+      Object.assign(row!, { state: "consumed", consumedAtMs: currentBeforeTransition });
+      const used = { ...intent, state: "consumed" as const, consumedAtMs: currentBeforeTransition };
+      if (input.afterConsume) await input.afterConsume(used, transaction);
+      if (intent.expiresAtMs <= nowMs(input.now)) throw new TpaStoreError("intent");
+      return used;
+    }),
+    revokeIntent: async input => lifecycleTransaction(async transaction => {
       assertBound(input.userId, input.sessionHash, input.origin);
       assertId(input.intentId);
       lockOwner(input.userId);
@@ -193,8 +249,10 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       const current = nowMs(input.now);
       if (intent.state === "consumed" || intent.state === "revoked") throw new TpaStoreError("intent");
       Object.assign(row, { state: "revoked", revokedAtMs: current });
-      return { ...intent, state: "revoked", revokedAtMs: current };
-    },
+      const revoked = { ...intent, state: "revoked" as const, revokedAtMs: current };
+      if (input.afterRevoke) await input.afterRevoke(revoked, transaction);
+      return revoked;
+    }),
     revokeCredential: async input => {
       if (!HEX_64.test(input.credentialIdHash)) throw new TpaStoreError("credential");
       lockOwner(input.userId);
@@ -203,6 +261,13 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       if (!credential || credential.userId !== input.userId || credential.revokedAtMs !== null) throw new TpaStoreError("credential");
       credential.revokedAtMs = current;
       return { credentialIdHash: credential.credentialIdHash, label: credential.label, createdAtMs: credential.createdAtMs, revokedAtMs: current } satisfies TpaCredentialPublic;
+    },
+    readIntent: async input => {
+      assertBound(input.userId, input.sessionHash, input.origin);
+      if (!HEX_64.test(input.intentId)) return null;
+      lockOwner(input.userId);
+      const row = intents.get(input.intentId);
+      return row ? assertBoundIntent(row, input.userId, input.sessionHash, input.origin) : null;
     },
     tpaStatus: async input => {
       assertBound(input.userId, input.sessionHash, input.origin);
@@ -223,9 +288,9 @@ export function createMemoryTpaPersistence(options: { ownerIds: number[] }) {
       if (sha256(canonicalTpaMandate(mandate)) !== row.mandateHash || row.expiresAtMs !== mandate.expires * 1000 || mandate.expires - mandate.issuedAt > TPA_TTL_SECONDS || mandate.issuerUserId !== input.userId) throw new TpaEvidenceError("integrity");
       return { id: row.id, mandate, mandateHash: row.mandateHash, state: row.state, createdAtMs: row.createdAtMs, expiresAtMs: row.expiresAtMs, authorizedAtMs: row.authorizedAtMs, consumedAtMs: row.consumedAtMs, revokedAtMs: row.revokedAtMs, authorizedCredentialIdHash: row.authorizedCredentialIdHash };
     },
-    saveSignature: async input => { signatures.set(input.intentId, { ...input }); },
+    saveSignature: async input => { const { transaction: _transaction, ...signature } = input; signatures.set(signature.intentId, signature); },
     getSignatures: async input => new Map(input.intentIds.filter(id => HEX_64.test(id)).map(id => signatures.get(id)).filter((s): s is TpaStoredSignature => !!s && s.userId === input.userId).map(s => [s.intentId, { ...s }])),
-    saveChallengeBinding: async input => { bindings.set(input.ceremonyId, { ...input }); },
+    saveChallengeBinding: async input => { const { transaction: _transaction, ...binding } = input; bindings.set(binding.ceremonyId, binding); },
     getChallengeBinding: async input => { const b = bindings.get(input.ceremonyId); return b && b.userId === input.userId ? { ...b } : null; },
     audit: async event => {
       audit.push({ id: audit.length + 1, userId: event.userId, intentId: event.intentId && HEX_64.test(event.intentId) ? event.intentId : null, action: event.action.slice(0, 32), outcome: event.outcome, reasonCode: event.reasonCode.slice(0, 48), mandateHash: event.mandateHash ?? null, keyId: event.keyId ?? null, atMs: event.atMs });

@@ -147,30 +147,62 @@ export function createTpaService(input: CreateTpaServiceInput) {
   }
 
   /** Approvals and pre-use attempts must be recorded; failure to record refuses the action (fail closed). */
-  async function auditRequired(owner: TpaAuthenticatedOwner, action: string, outcome: "approved" | "attempt", intent: { id: string; mandateHash: string } | null, keyId?: string) {
+  async function auditRequired(owner: TpaAuthenticatedOwner, action: string, outcome: "approved" | "attempt", intent: { id: string; mandateHash: string } | null, keyId?: string, transaction?: unknown) {
     if (!evidence) return;
-    try { await evidence.audit({ userId: owner.principalId, intentId: intent?.id ?? null, action, outcome, reasonCode: outcome === "attempt" ? "pending" : "ok", mandateHash: intent?.mandateHash ?? null, keyId: keyId ?? null, atMs: now() }); }
+    try { await evidence.audit({ userId: owner.principalId, intentId: intent?.id ?? null, action, outcome, reasonCode: outcome === "attempt" ? "pending" : "ok", mandateHash: intent?.mandateHash ?? null, keyId: keyId ?? null, atMs: now(), transaction }); }
     catch { throw new TpaServiceError("unavailable", "TPA authorization service is temporarily unavailable."); }
   }
 
-  /** Reads the intent and verifies its server signature. Null signer/evidence means legacy (unsigned) mode. */
-  async function verifiedIntent(owner: TpaAuthenticatedOwner, intentId: string): Promise<{ intent: TpaIntentPublic; signature: TpaStoredSignature | null } | null> {
-    if (!evidence) return null;
-    const intent = await evidence.readIntent({ userId: owner.principalId, origin: authority.origin, intentId });
-    if (!intent) throw new TpaServiceError("intent", "The authorization intent is unavailable, expired, or no longer active.");
-    if (!signer) {
-      if (isCheckoutMandate(intent.mandate)) throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "signer_not_configured");
-      return { intent, signature: null };
+  /**
+   * Incident-response revocation must remain possible when the optional audit
+   * backend is unavailable. Unlike approval evidence, this post-commit audit is
+   * therefore deliberately best-effort; callers never see a successful revoke
+   * reported as a failure merely because observability is degraded.
+   */
+  async function auditRevocationBestEffort(owner: TpaAuthenticatedOwner, action: "revoked" | "credential_revoked", intent: { id: string; mandateHash: string } | null) {
+    if (!evidence) return;
+    try { await evidence.audit({ userId: owner.principalId, intentId: intent?.id ?? null, action, outcome: "approved", reasonCode: "ok", mandateHash: intent?.mandateHash ?? null, keyId: null, atMs: now() }); }
+    catch { /* revocation has committed; audit availability must not block containment */ }
+  }
+
+  /**
+   * Verifies server evidence for an already-locked intent. Checkout mandates are
+   * never allowed to degrade to unsigned mode; only explicitly enabled legacy
+   * v2 mandates may do so when evidence/signing is unavailable.
+   */
+  async function verifyLockedIntent(owner: TpaAuthenticatedOwner, intent: TpaIntentPublic, transaction?: unknown): Promise<TpaStoredSignature | null> {
+    const checkout = isCheckoutMandate(intent.mandate);
+    if (!evidence) {
+      if (checkout) throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "evidence_not_configured");
+      if (input.legacyTransferMandates) return null;
+      throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "evidence_not_configured");
     }
-    const signature = (await evidence.getSignatures({ userId: owner.principalId, intentIds: [intent.id] })).get(intent.id);
+    if (!signer) {
+      if (checkout) throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "signer_not_configured");
+      if (input.legacyTransferMandates) return null;
+      throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "signer_not_configured");
+    }
+    const signature = (await evidence.getSignatures({ userId: owner.principalId, intentIds: [intent.id], transaction, forUpdate: !!transaction })).get(intent.id);
     if (!signature) {
-      if (!isCheckoutMandate(intent.mandate) && input.legacyTransferMandates) return { intent, signature: null };
+      if (!checkout && input.legacyTransferMandates) return null;
       throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "missing");
     }
     if (signature.mandateHash !== intent.mandateHash) throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", "hash_mismatch");
     const failure = signer.verify(canonicalTpaMandate(intent.mandate), signature);
     if (failure) throw new TpaServiceError("mandate_signature_invalid", "The mandate's server signature could not be verified.", failure);
-    return { intent, signature };
+    return signature;
+  }
+
+  /** Read-only preflight used only to derive a challenge; transitions re-verify while locked. */
+  async function verifiedIntent(owner: TpaAuthenticatedOwner, intentId: string): Promise<{ intent: TpaIntentPublic; signature: TpaStoredSignature | null } | null> {
+    // This exact owner/session/origin-bound read is only for challenge creation.
+    // It deliberately never uses the last-30 status listing; the state-changing
+    // operation then rechecks evidence under its own intent-row lock.
+    let intent;
+    try { intent = await input.store.readIntent({ ...binding(owner), intentId }); }
+    catch (error) { throw asServiceError(error); }
+    if (!intent) throw new TpaServiceError("intent", "The authorization intent is unavailable, expired, or no longer active.");
+    return { intent, signature: await verifyLockedIntent(owner, intent) };
   }
 
   return {
@@ -203,7 +235,7 @@ export function createTpaService(input: CreateTpaServiceInput) {
         if (typeof value?.label !== "string" || value.label.trim().length < 1 || value.label.trim().length > 64 || value.consent !== true) throw new TpaServiceError("invalid", "A credential label and explicit consent are required.");
         const ceremonyId = nextId(); const challenge = nextChallenge();
         try {
-          const created = await input.store.startRegistration({ ...binding(owner), ceremonyId, challenge, label: value.label.trim() });
+          const created = await input.store.startRegistration({ ...binding(owner), ceremonyId, challenge, label: value.label.trim(), now });
           const options = await makeRegistrationOptions({ challenge, rpID: authority.rpID, userId: owner.principalId, userName: (input.ownerName ?? (identity => `owner-${identity.principalId}`))(owner), excludeCredentials: created.credentialIds });
           return { ceremonyId: created.ceremonyId, options };
         } catch (error) { return mapStoreError(error); }
@@ -214,7 +246,7 @@ export function createTpaService(input: CreateTpaServiceInput) {
       return audited("registration_verify", context, null, async () => {
         const owner = requireMutationContext(context);
         let ceremony;
-        try { ceremony = await input.store.consumeRegistrationCeremony({ ...binding(owner), ceremonyId: value.ceremonyId }); }
+        try { ceremony = await input.store.consumeRegistrationCeremony({ ...binding(owner), ceremonyId: value.ceremonyId, now }); }
         catch (error) { return mapStoreError(error); }
         let response;
         try { response = parseRegistrationResponse(value.response); }
@@ -223,8 +255,10 @@ export function createTpaService(input: CreateTpaServiceInput) {
           const verified = await verifyRegistration({ response, challenge: ceremony.challenge, origin: authority.origin, rpID: authority.rpID });
           if (!verified.verified || !verified.registrationInfo.userVerified) throw new TpaServiceError("ceremony", "The authorization ceremony was not accepted.");
           const info = verified.registrationInfo;
-          const credential = await input.store.saveVerifiedCredential({ ...binding(owner), ceremonyId: ceremony.id, credentialId: info.credential.id, publicKeyBase64: Buffer.from(info.credential.publicKey).toString("base64url"), counter: info.credential.counter, transports: response.response.transports ?? [], label: ceremony.label ?? "Authorization credential", deviceType: info.credentialDeviceType, backedUp: info.credentialBackedUp });
-          await auditRequired(owner, "credential_registered", "approved", null);
+          const credential = await input.store.saveVerifiedCredential({
+            ...binding(owner), ceremonyId: ceremony.id, credentialId: info.credential.id, publicKeyBase64: Buffer.from(info.credential.publicKey).toString("base64url"), counter: info.credential.counter, transports: response.response.transports ?? [], label: ceremony.label ?? "Authorization credential", deviceType: info.credentialDeviceType, backedUp: info.credentialBackedUp, now,
+            afterSave: async (_saved, transaction) => { await auditRequired(owner, "credential_registered", "approved", null, undefined, transaction); },
+          });
           return { ceremonyId: ceremony.id, accepted: true as const, credential };
         } catch (error) {
           if (error instanceof TpaServiceError) throw error;
@@ -280,14 +314,23 @@ export function createTpaService(input: CreateTpaServiceInput) {
         if (signer && evidence) {
           const signed = signer.sign(canonical);
           serverSignature = { intentId: id, userId: owner.principalId, mandateHash: expectedHash, ...signed, createdAtMs: now() };
-          // Signed before the intent exists: an intent row can never be observed without its signature.
-          await evidence.saveSignature(serverSignature);
         }
         let intent: TpaIntentPublic;
-        try { intent = await input.store.createIntent({ ...binding(owner), id, mandate, now: now() }); }
-        catch (error) { return mapStoreError(error); }
+        try {
+          intent = await input.store.createIntent({
+            ...binding(owner), id, mandate, now,
+            afterCreate: async (created, transaction) => {
+              if (created.mandateHash !== expectedHash) throw new TpaServiceError("integrity", "Stored authorization evidence failed integrity verification.");
+              // v3 only reaches here with signer + evidence (checked before mandate
+              // construction). Persist signature and approval audit in this same
+              // transaction as the intent to avoid either kind of orphan.
+              if (serverSignature && evidence) await evidence.saveSignature({ ...serverSignature, transaction });
+              await auditRequired(owner, "intent_created", "approved", created, serverSignature?.keyId, transaction);
+            },
+          });
+        }
+        catch (error) { throw asServiceError(error); }
         if (intent.mandateHash !== expectedHash) throw new TpaServiceError("unavailable", "TPA authorization service is temporarily unavailable.");
-        await auditRequired(owner, "intent_created", "approved", intent, serverSignature?.keyId);
         const result = publicIntent(intent);
         return serverSignature ? { ...result, serverSignature: { keyId: serverSignature.keyId, algorithm: serverSignature.algorithm, signature: serverSignature.signature, valid: true } } : result;
       });
@@ -297,6 +340,9 @@ export function createTpaService(input: CreateTpaServiceInput) {
       return audited("authorization_options", context, value?.intentId, async () => {
         const owner = requireMutationContext(context);
         if (value.consent !== true) throw new TpaServiceError("invalid", "Explicit consent is required.");
+        // This preflight exists solely to derive the WebAuthn challenge. The
+        // authoritative signature/hash/state check is repeated after the intent
+        // row is locked inside startAuthorization below.
         const checked = await verifiedIntent(owner, value.intentId);
         const ceremonyId = nextId();
         let challenge: string;
@@ -306,15 +352,25 @@ export function createTpaService(input: CreateTpaServiceInput) {
           // mandate hash makes the human's signature commit to exactly this mandate.
           bindingNonce = nextChallenge();
           challenge = deriveTpaMandateChallenge(checked.intent.mandateHash, bindingNonce);
-          await evidence.saveChallengeBinding({ ceremonyId, userId: owner.principalId, intentId: checked.intent.id, mandateHash: checked.intent.mandateHash, bindingNonce, challenge, createdAtMs: now() });
         } else {
           challenge = nextChallenge();
         }
         let created;
-        try { created = await input.store.startAuthorization({ ...binding(owner), ceremonyId, challenge, intentId: value.intentId, now: now() }); }
-        catch (error) { return mapStoreError(error); }
+        try {
+          created = await input.store.startAuthorization({
+            ...binding(owner), ceremonyId, challenge, intentId: value.intentId, now,
+            onIntentLocked: async (locked, transaction) => {
+              await verifyLockedIntent(owner, locked, transaction);
+              if (bindingNonce && evidence) {
+                const expected = deriveTpaMandateChallenge(locked.mandateHash, bindingNonce);
+                if (expected !== challenge) throw new TpaServiceError("challenge_unbound", "The passkey challenge is not bound to this mandate.");
+                await evidence.saveChallengeBinding({ ceremonyId, userId: owner.principalId, intentId: locked.id, mandateHash: locked.mandateHash, bindingNonce, challenge, createdAtMs: now(), transaction });
+              }
+            },
+          });
+        }
+        catch (error) { throw asServiceError(error); }
         if (!created.intent) throw new TpaServiceError("intent", "The authorization intent is unavailable, expired, or no longer active.");
-        if (checked && created.intent.mandateHash !== checked.intent.mandateHash) throw new TpaServiceError("integrity", "Stored authorization evidence failed integrity verification.");
         const options = await makeAuthenticationOptions({ challenge, rpID: authority.rpID, allowCredentials: created.credentialIds });
         return {
           ceremonyId: created.ceremonyId, options, mandate: created.intent.mandate, mandateHash: created.intent.mandateHash,
@@ -328,17 +384,8 @@ export function createTpaService(input: CreateTpaServiceInput) {
         const owner = requireMutationContext(context);
         if (value.consent !== true) throw new TpaServiceError("invalid", "Explicit consent is required.");
         let ceremony;
-        try { ceremony = await input.store.consumeAuthorizationCeremony({ ...binding(owner), ceremonyId: value.ceremonyId, intentId: value.intentId, now: now() }); }
+        try { ceremony = await input.store.consumeAuthorizationCeremony({ ...binding(owner), ceremonyId: value.ceremonyId, intentId: value.intentId, now }); }
         catch (error) { return mapStoreError(error); }
-        const checked = await verifiedIntent(owner, value.intentId);
-        if (checked && evidence) {
-          const bound = await evidence.getChallengeBinding({ userId: owner.principalId, ceremonyId: ceremony.id });
-          let expected: string | null = null;
-          try { expected = bound ? deriveTpaMandateChallenge(checked.intent.mandateHash, bound.bindingNonce) : null; } catch { expected = null; }
-          if (!bound || bound.intentId !== checked.intent.id || bound.mandateHash !== checked.intent.mandateHash || bound.challenge !== ceremony.challenge || expected !== ceremony.challenge) {
-            throw new TpaServiceError("challenge_unbound", "The passkey challenge is not bound to this mandate.");
-          }
-        }
         let response;
         try { response = parseAuthenticationResponse(value.response); }
         catch { throw new TpaServiceError("ceremony", "The authorization ceremony was not accepted."); }
@@ -351,10 +398,29 @@ export function createTpaService(input: CreateTpaServiceInput) {
         catch { throw new TpaServiceError("ceremony", "The authorization ceremony was not accepted."); }
         if (!verified.verified || !verified.authenticationInfo.userVerified || verified.authenticationInfo.credentialID !== credential.credentialId) throw new TpaServiceError("ceremony", "The authorization ceremony was not accepted.");
         let intent;
-        try { intent = await input.store.finalizeAuthorization({ ...binding(owner), intentId: value.intentId, credentialId: credential.credentialId, newCounter: verified.authenticationInfo.newCounter, now: now() }); }
-        catch (error) { return mapStoreError(error); }
-        if (checked && intent.mandateHash !== checked.intent.mandateHash) throw new TpaServiceError("integrity", "Stored authorization evidence failed integrity verification.");
-        await auditRequired(owner, "authorized", "approved", intent, checked?.signature?.keyId);
+        let lockedSignature: TpaStoredSignature | null = null;
+        try {
+          intent = await input.store.finalizeAuthorization({
+            ...binding(owner), intentId: value.intentId, credentialId: credential.credentialId, newCounter: verified.authenticationInfo.newCounter, now,
+            beforeFinalize: async (locked, transaction) => {
+              lockedSignature = await verifyLockedIntent(owner, locked, transaction);
+              if (evidence) {
+                const bound = await evidence.getChallengeBinding({ userId: owner.principalId, ceremonyId: ceremony.id, transaction, forUpdate: true });
+                let expected: string | null = null;
+                try { expected = bound ? deriveTpaMandateChallenge(locked.mandateHash, bound.bindingNonce) : null; } catch { expected = null; }
+                if (!bound || bound.intentId !== locked.id || bound.mandateHash !== locked.mandateHash || bound.challenge !== ceremony.challenge || expected !== ceremony.challenge) {
+                  throw new TpaServiceError("challenge_unbound", "The passkey challenge is not bound to this mandate.");
+                }
+              }
+            },
+            afterFinalize: async (authorized, transaction) => {
+              // `beforeFinalize` locked the same intent and signature row; reuse
+              // that result rather than re-verifying unchanged evidence.
+              await auditRequired(owner, "authorized", "approved", authorized, lockedSignature?.keyId, transaction);
+            },
+          });
+        }
+        catch (error) { throw asServiceError(error); }
         return { accepted: true as const, intent: publicIntent(intent) };
       });
     },
@@ -368,27 +434,35 @@ export function createTpaService(input: CreateTpaServiceInput) {
       return audited("consume", context, value?.intentId, async () => {
         const owner = requireMutationContext(context);
         if (value.consent !== true) throw new TpaServiceError("invalid", "Explicit consent is required.");
-        const checked = await verifiedIntent(owner, value.intentId);
-        if (checked) {
-          if (isCheckoutMandate(checked.intent.mandate)) {
-            if (value.checkout === undefined) throw new TpaServiceError("terms_changed", "The actual checkout must be presented and match the signed mandate.", "checkout_required");
-            const difference = compareCheckoutToMandate(checked.intent.mandate, value.checkout);
-            if (difference) throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", difference);
-          } else if (value.checkout !== undefined) {
-            const legacy = checked.intent.mandate;
-            const presented = value.checkout as Partial<TpaCheckoutInput>;
-            if (presented.totalBaseUnits !== legacy.amountBaseUnits || presented.recipient !== legacy.recipient || presented.currency !== legacy.currency) {
-              throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", "legacy_mismatch");
-            }
-          }
-          await auditRequired(owner, "consume", "attempt", checked.intent, checked.signature?.keyId);
-        }
         let intent;
-        try { intent = await input.store.consumeIntent({ ...binding(owner), intentId: value.intentId, now: now() }); }
-        catch (error) { return mapStoreError(error); }
-        if (checked && intent.mandateHash !== checked.intent.mandateHash) throw new TpaServiceError("integrity", "Stored authorization evidence failed integrity verification.");
-        await auditRequired(owner, "consumed", "approved", intent, checked?.signature?.keyId).catch(() => undefined);
-        return { consumed: true as const, intent: publicIntent(intent), ...(checked ? { checkoutMatched: isCheckoutMandate(intent.mandate) } : {}), ...TPA_MODE };
+        let lockedSignature: TpaStoredSignature | null = null;
+        let checkoutMandate = false;
+        try {
+          intent = await input.store.consumeIntent({
+            ...binding(owner), intentId: value.intentId, now,
+            beforeConsume: async (locked, transaction) => {
+              lockedSignature = await verifyLockedIntent(owner, locked, transaction);
+              if (isCheckoutMandate(locked.mandate)) {
+                checkoutMandate = true;
+                if (value.checkout === undefined) throw new TpaServiceError("terms_changed", "The actual checkout must be presented and match the signed mandate.", "checkout_required");
+                const difference = compareCheckoutToMandate(locked.mandate, value.checkout);
+                if (difference) throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", difference);
+              } else if (value.checkout !== undefined) {
+                const presented = value.checkout as Partial<TpaCheckoutInput>;
+                if (presented.totalBaseUnits !== locked.mandate.amountBaseUnits || presented.recipient !== locked.mandate.recipient || presented.currency !== locked.mandate.currency) {
+                  throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", "legacy_mismatch");
+                }
+              }
+              await auditRequired(owner, "consume", "attempt", locked, lockedSignature?.keyId, transaction);
+            },
+            afterConsume: async (used, transaction) => {
+              // `beforeConsume` locked the same intent and signature row.
+              await auditRequired(owner, "consumed", "approved", used, lockedSignature?.keyId, transaction);
+            },
+          });
+        }
+        catch (error) { throw asServiceError(error); }
+        return { consumed: true as const, intent: publicIntent(intent), ...(evidence ? { checkoutMatched: checkoutMandate } : {}), ...TPA_MODE };
       });
     },
 
@@ -397,9 +471,9 @@ export function createTpaService(input: CreateTpaServiceInput) {
         const owner = requireMutationContext(context);
         if (value.consent !== true) throw new TpaServiceError("invalid", "Explicit consent is required.");
         let intent;
-        try { intent = await input.store.revokeIntent({ ...binding(owner), intentId: value.intentId, now: now() }); }
-        catch (error) { return mapStoreError(error); }
-        await auditRequired(owner, "revoked", "approved", intent).catch(() => undefined);
+        try { intent = await input.store.revokeIntent({ ...binding(owner), intentId: value.intentId, now }); }
+        catch (error) { throw asServiceError(error); }
+        await auditRevocationBestEffort(owner, "revoked", intent);
         return { revoked: true as const, intent: publicIntent(intent) };
       });
     },
@@ -409,9 +483,9 @@ export function createTpaService(input: CreateTpaServiceInput) {
         const owner = requireMutationContext(context);
         if (value.consent !== true) throw new TpaServiceError("invalid", "Explicit consent is required.");
         let credential;
-        try { credential = await input.store.revokeCredential({ userId: owner.principalId, credentialIdHash: value.credentialIdHash, now: now() }); }
+        try { credential = await input.store.revokeCredential({ userId: owner.principalId, credentialIdHash: value.credentialIdHash, now }); }
         catch (error) { return mapStoreError(error); }
-        await auditRequired(owner, "credential_revoked", "approved", null).catch(() => undefined);
+        await auditRevocationBestEffort(owner, "credential_revoked", null);
         return { revoked: true as const, credential };
       });
     },

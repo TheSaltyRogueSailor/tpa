@@ -188,9 +188,13 @@ async function main() {
 
   const laptopC: TpaCheckoutInput = { ...LAPTOP, taxBaseUnits: "9993", totalBaseUnits: "135393" };
   const a4c = await agentRequestsMandate(laptopC);
-  const unboundCeremony = randomBytes(32).toString("hex");
+  const boundPrompt = await service.authenticationOptions(ctx, { intentId: a4c.id, consent: true });
+  const unboundCeremony = boundPrompt.ceremonyId;
   const genericChallenge = randomBytes(32).toString("base64url");
-  await memory.store.startAuthorization({ userId: owner.principalId, sessionHash: owner.sessionHash, origin: ORIGIN, ceremonyId: unboundCeremony, challenge: genericChallenge, intentId: a4c.id, now: now() });
+  // Demo-only storage tampering: raw v3 ceremonies without verification hooks
+  // now fail closed. Corrupt an issued ceremony and remove its binding instead.
+  memory.tamper.ceremonies.get(unboundCeremony)!.challenge = genericChallenge;
+  memory.tamper.bindings.delete(unboundCeremony);
   await runCase("passkey-unbound", "Attack 4", "Passkey prompt not tied to the mandate", "Owner is tricked into a generic sign-in style passkey prompt; it is used to approve the laptop.", "challenge_unbound",
     () => service.authorize(ctx, { intentId: a4c.id, ceremonyId: unboundCeremony, response: phone.assert(genericChallenge), consent: true }), a4c.id, laptopC);
 
