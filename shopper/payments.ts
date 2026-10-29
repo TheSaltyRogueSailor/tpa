@@ -394,6 +394,8 @@ export const centsToUsdz = (cents: string) => BigInt(cents) * 10n ** 16n;
 export function createMetalUsdzAdapter(client: MetalClient, payer: string, merchantAddresses: Record<string, string>, ledger: DispatchLedger): PaymentAdapter {
   const live = client.mode !== "mock";
   const allowlist = Object.freeze({ ...merchantAddresses });
+  const sameTx = (a: unknown, b: string) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
+  const referenceMismatch = (recorded: string) => new PaymentRefused("dispatch_result_mismatch", `Metal: rail reference does not match the recorded transaction ${recorded}; not marking it paid, not resending.`);
   const toResult = (tx: { txHash: string; finalized: boolean }, target: Readonly<DispatchTarget>): PaymentResult => {
     if (tx.finalized !== true) throw new PaymentRefused("metal_not_final", `Metal: ${tx.txHash} is not final yet; keep pending, do not resend.`);
     return { rail: "metal-usdz", mode: client.mode, status: "succeeded", reference: tx.txHash,
@@ -413,10 +415,15 @@ export function createMetalUsdzAdapter(client: MetalClient, payer: string, merch
       const reconcile = client.reconcile ? async (record: DispatchRecord) => {
         if (!record.txHash) return null;
         const tx = await client.reconcile!({ txHash: record.txHash, from: payer, to: record.payee, amount: BigInt(record.railAmount) });
+        if (tx && !sameTx(tx.txHash, record.txHash)) throw referenceMismatch(record.txHash);
         return tx && tx.finalized === true ? toResult(tx, { payee: record.payee, railAmount: record.railAmount }) : null;
       } : undefined;
       return bound.run("metal-usdz", snap, target, async ({ onSigned, target: t, request: r }) => {
-        const tx = await client.transfer({ from: payer, to: t.payee, amount: BigInt(t.railAmount), memo: r.receipt.mandateHash, onSigned });
+        let recorded: string | undefined;
+        const tx = await client.transfer({ from: payer, to: t.payee, amount: BigInt(t.railAmount), memo: r.receipt.mandateHash,
+          onSigned: async txHash => { await onSigned(txHash); recorded = txHash; } });
+        // Only the hash the ledger recorded before broadcast may settle the row; anything else stays "sent" for reconcile.
+        if (!recorded || !sameTx(tx.txHash, recorded)) throw referenceMismatch(recorded ?? "none");
         return toResult(tx, t);
       }, reconcile);
     },

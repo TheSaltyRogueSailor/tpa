@@ -15,7 +15,7 @@
  * are never logged. Every error leaving this module is passed through maskSecrets().
  */
 import { readFileSync, existsSync } from "node:fs";
-import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, erc20Abi, getAddress, http, parseAbi, parseEventLogs, type Address, type Hex, type PublicClient } from "viem";
+import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, erc20Abi, getAddress, http, parseAbi, parseEventLogs, type Address, type Hex, type PublicClient, type Transport } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { estimateGasLimit, signMip20Contract } from "@metalntwx/metal-ts";
 import { createMockMetalClient, METAL_TESTNET, PaymentRefused, type MetalClient } from "./payments.js";
@@ -56,7 +56,11 @@ export function maskSecrets(text: string, secrets: Array<string | undefined>): s
 }
 
 /* -------------------------------- live client -------------------------------- */
-export type MetalLiveConfig = { rpcUrl: string; payerKey: Hex; apiKey?: string; receiptTimeoutMs?: number; finalityTimeoutMs?: number };
+export type MetalLiveConfig = {
+  rpcUrl: string; payerKey: Hex; apiKey?: string; receiptTimeoutMs?: number; finalityTimeoutMs?: number;
+  /** Test seam only: an in-process transport so refusal tests make no RPC calls. Production uses http(rpcUrl). */
+  transport?: Transport;
+};
 export const metalTestnet = (rpcUrl: string) => defineChain({
   id: METAL_TESTNET.chainId, name: "Metal Testnet", nativeCurrency: { name: "USDZ", symbol: "USDZ", decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } },
 });
@@ -67,8 +71,9 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
   const fail = (reason: string, e: unknown): never => { throw new PaymentRefused(reason, `Metal testnet: ${mask(e)}`); };
   const chain = metalTestnet(config.rpcUrl);
   const account = privateKeyToAccount(config.payerKey);
-  const publicClient = createPublicClient({ chain, transport: http(config.rpcUrl) }) as PublicClient;
-  const walletClient = createWalletClient({ chain, account, transport: http(config.rpcUrl) });
+  const transport = config.transport ?? http(config.rpcUrl);
+  const publicClient = createPublicClient({ chain, transport }) as PublicClient;
+  const walletClient = createWalletClient({ chain, account, transport });
   let verified: Promise<void> | undefined;
   let queue: Promise<unknown> = Promise.resolve(); // serialize per signing account (docs: avoid nonce reuse)
 
@@ -135,9 +140,15 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
   async function reconcileOnce(txHash: string, from: string, to: string, amount: bigint) {
     if (getAddress(from) !== account.address) throw new PaymentRefused("payer_mismatch", "Metal testnet: payer address does not match the signing key.");
     if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return null;
+    // After a restart this may be the first call on a fresh client: prove chain id, USDZ (MIP20) and decimals
+    // against the RPC before trusting any receipt from it. A failure refuses; the row stays "sent", nothing is resent.
+    try { await ensure(); } catch (e) { fail("metal_network_check", e); }
     let receipt;
     try { receipt = await publicClient.getTransactionReceipt({ hash: txHash as Hex }); }
     catch { return null; } // not mined (or not found yet): stay pending, never resend
+    if (receipt.transactionHash?.toLowerCase() !== txHash.toLowerCase()) {
+      throw new PaymentRefused("metal_reference_mismatch", `Metal testnet: receipt does not belong to the recorded transaction ${txHash}; keep pending, do not resend.`);
+    }
     return settle(txHash as Hex, getAddress(to), amount, receipt);
   }
 
