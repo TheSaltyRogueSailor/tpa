@@ -1,6 +1,6 @@
 # TPA Authorization Pilot: standalone library
 
-This is a reusable, framework-neutral **authorization-evidence pilot**. It creates canonical single-use checkout mandates (mandate version 3.0) that bind the merchant, line items, shipping, tax and total, signs each one with a server Ed25519 key, binds the passkey/WebAuthn challenge to that exact mandate for a host-authenticated owner, refuses use unless the checkout presented at consume matches exactly, records approvals and refusals in an audit log, and persists credential, intent and evidence state with MySQL row locking. It is not a payment service, bank integration, custody system, blockchain signing service, wallet, transfer executor, settlement engine, identity proofing service, or independent liveness system.
+This is a reusable, framework-neutral **authorization-evidence pilot**. It creates canonical single-use checkout mandates (mandate version 3.0, plus the 3.1 bound checkout mandate used by TPA Shopper) that bind the merchant, line items, shipping, tax and total, signs each one with a server Ed25519 key, binds the passkey/WebAuthn challenge to that exact mandate for a host-authenticated owner, refuses use unless the checkout presented at consume matches exactly, records approvals and refusals in an audit log, and persists credential, intent and evidence state with MySQL row locking. It is not a payment service, bank integration, custody system, blockchain signing service, wallet, transfer executor, settlement engine, identity proofing service, or independent liveness system.
 
 `TPA_MODE` is intentionally explicit: `paymentExecution: false`, `onChainSubmission: false`, `independentLiveness: "not-configured"`, and `identityClaim: "registered-credential-control"`.
 
@@ -10,7 +10,10 @@ The independently tested source checkpoint is documented in [VALIDATION.md](VALI
 
 | Path | Purpose |
 | --- | --- |
-| `src/domain.ts` | Immutable mandate schemas (3.0 checkout and legacy 2.0 transfer), canonicalization, checkout comparison, exact base-unit helpers, and explicit pilot boundary. |
+| `src/domain.ts` | Immutable mandate schemas (3.1 bound checkout, 3.0 checkout and legacy 2.0 transfer), canonicalization, checkout comparison, exact base-unit helpers, and explicit pilot boundary. |
+| `src/binding.ts` | v3.1 checkout fingerprint and payment target hashes (`TPA-CHECKOUT-FP/3.1`, `TPA-PAYMENT-TARGET/3.1`). |
+| `src/approval.ts` | Display data for the owner approval of a 3.1 mandate: network, exact amount, conversion and its expiry, TPA fee, network fee asset and cap, maximum wallet debit. |
+| `src/dispatch.ts` | Payment dispatch reservation state machine and its MySQL store (`tpa_payment_dispatches`). |
 | `src/config.ts` | Exact HTTPS origin and RP ID authority; fails closed when either is absent or inconsistent. |
 | `src/signing.ts` | Ed25519 mandate signer/verifier with key ids for rotation; loads keys from environment. |
 | `src/evidence.ts` | Signature, passkey challenge binding, and audit-log persistence; challenge derivation. |
@@ -22,6 +25,7 @@ The independently tested source checkpoint is documented in [VALIDATION.md](VALI
 | `src/http/express.ts` | Working bounded Express router factory that requires a host identity resolver. |
 | `src/schema.ts`, `migrations/0000_tpa_standalone.sql` | Base data schema: minimal principal contract, credentials, intents, and ceremonies. |
 | `migrations/0001_tpa_mandate_hardening.sql` | Adds the mandate signature, challenge binding, and audit event tables. Apply after `0000`. |
+| `migrations/0002_tpa_payment_dispatches.sql`, `migrations/0003_tpa_checkout_binding.sql` | Payment dispatch reservations, then the v3.1 binding columns. Additive only; apply in order after `0001`. |
 | `client-reference/tpa-client.ts` | Optional compile-tested browser reference using SimpleWebAuthn without a social application UI. |
 | `examples/express-host.ts` | Reference host mount showing explicit configuration and host-session seam. It intentionally does not start a server. |
 | `scripts/generate-mandate-signing-key.mjs` | Generates an Ed25519 mandate signing key into a 0600 file and prints only the key id and public key. |
@@ -138,6 +142,27 @@ All money is an integer count of base units (cents for USD) carried as a string.
 - **Migration.** Apply `migrations/0001_tpa_mandate_hardening.sql` after `0000`. It only adds tables.
 - **Legacy.** The 2.0 amount-and-recipient transfer mandate is refused unless `legacyTransferMandates: true`.
 
+## Bound checkout mandates and payment dispatch (mandate version 3.1)
+
+TPA Shopper issues 3.1 mandates. A 3.1 mandate carries everything in 3.0 plus the trusted server quote (merchant, quote id, quote expiry), the frozen payment target (rail, network, payee, exact rail amount, conversion id, rate and conversion expiry) and two hashes over them. The mandate expiry is never later than the quote or the conversion expiry.
+
+What the owner approves. `createIntent` returns `approval`, built by `tpaApprovalSummary(mandate)` from the signed mandate only. It lists the network, the exact amount on the rail, the conversion and when it expires, the TPA fee, the network fee asset and cap, and the maximum wallet debit (rail amount plus the network fee cap). A host must show these values before the passkey step. In the demo the approval is a synthetic passkey, not a human review screen.
+
+Fees. `feeBaseUnits` is always `"0"`. It means a zero TPA or platform fee. It does not cover network (gas) fees, which are separate. On Metal, gas is paid in USDZ and is capped per payment at `METAL_FEE_CAP_BASE_UNITS` = 1,000,000 USDZ base units, which is 0.000000000001 USDZ (USDZ has 18 decimals). It is not 1,000,000 USDZ.
+
+Conversion. The conversion id `usd-usdz-par` (1 USD = 1 USDZ) is a demo and testnet assumption. It is not a market quote, a redemption promise or proof of reserves. `usd-usd-identity` means no conversion.
+
+Expiry. Mandate, quote and conversion expiry are decisions made by the trusted server when it authorizes and submits a payment. They are not deadlines enforced by the chain: a transaction that was already broadcast can still confirm later.
+
+Dispatch. Every payment goes through one dispatch row per consumed intent (`shopper/payments.ts`, `src/dispatch.ts`). The ledger uses two separate checks:
+
+- **Signed proof** (read-only): the intent is consumed and its signed mandate, hashes and checkout still match. Recovery and reconcile of an existing row need only this, so a recorded payment still reconciles after the intent is revoked or has expired.
+- **Fresh execution gate**: the signed proof plus not revoked and not past the approval, quote or conversion expiry. It runs before the row is reserved, again immediately before the signer is called (after preparation such as gas estimation), and once more after the transaction id is durably recorded and immediately before the send, with nothing awaited between that last check and the send.
+
+If the gate fails before signing, nothing is signed and the reservation is released. If it fails after the transaction id is recorded, that transaction is never sent and the row stays read-only: it is never re-signed and never resent, and a retry only reconciles. A row whose outcome is unknown is handled the same way. The live Metal client refuses (`metal_unguarded`) to sign without both hooks.
+
+Limits of the mocks. The mock Metal client checks the fee cap and the payer balance but does not debit gas or record the gas actually used. The Airwallex rail is a mock (`createMockAiriAdapter`, a fixture destination, no provider call). The Airwallex sandbox adapter exists but is disabled and has never been run. The synthetic owner user 1 exists only in the demo rig; a host supplies its own owner identity.
+
 ## Running the tests
 
 Library tests (Vitest):
@@ -147,13 +172,14 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-Without a database, 45 tests run (31 TPA plus 14 TPA Shopper, which never need a database) and 69 are skipped. The two database suites, `tests/mandate.hardening.test.ts` (signed, passkey-bound, exact-match checkout mandates) and `tests/mandate.proof-of-permission.test.ts` (Proof of Permission refusals: changed amount, recipient or fee, expiry, replay, revocation, missing or forged passkey approval), run against the real service, real MySQL store and real WebAuthn verification when `TPA_TEST_DATABASE_URL` points at a disposable MariaDB or MySQL schema:
+Without a database, 204 tests run across 22 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
 
 ```sh
-TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' pnpm test
+TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' \
+TPA_DISPATCH_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_dispatch_test' pnpm test
 ```
 
-The suites drop and recreate every `tpa_*` table in that schema, so never point them at a shared or production database. With a database, all **114 library tests across 10 files** pass (verified locally on MariaDB 11.8).
+The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **308 library tests across 22 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-10-29).
 
 Ledger tests (local in-memory EVM, no database):
 
@@ -163,7 +189,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 45 offline library tests (31 TPA plus 14 TPA Shopper) and the 20 ledger tests.
+The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 204 offline library tests and the 20 ledger tests.
 
 ## Red-team demo (local, in memory)
 
@@ -225,8 +251,8 @@ Requirements: Node 20+ and pnpm. No database, no API keys, no network beyond a m
 
 | Scenario | Expected | Stopped by |
 | --- | --- | --- |
-| 1. Agent buys a coffee setup within a $120 budget, owner approves with passkey, paid via Airwallex (mock Airi), order number returned | PAID | |
-| 2. Same flow paid in USDZ on Metal (mock, chain 63825) | PAID | |
+| 1. Agent buys a coffee setup within a $120 budget, owner approves with passkey, paid via the Airwallex mock (mock Airi, no provider call), order number returned | PAID | |
+| 2. Same flow paid in USDZ on Metal (mock by default, chain 63825; real alta-testnet transfer with `METAL_LIVE=1`) | PAID | |
 | A. Merchant raises a price after approval | BLOCKED | TPA `terms_changed:items_mismatch` |
 | B. Checkout page injects an extra $49.99 protection plan | BLOCKED | TPA `terms_changed:items_mismatch` |
 | C. Lookalike merchant id (`harbor-supp1y`) at payment time | BLOCKED | TPA `terms_changed:merchant_mismatch` |
@@ -242,7 +268,7 @@ shopper intent + budget
   -> agent browses merchant          (Visa TAP, tag agent-browser-auth)
   -> agent plans cart within budget  (shopper/agent.ts, amounts in code)
   -> merchant quote                  (items, shipping, tax, total)
-  -> TPA mandate 3.0, Ed25519 signed (src/service.ts createIntent)
+  -> TPA mandate 3.1, Ed25519 signed (src/service.ts createIntent; returns the approval summary)
   -> owner passkey approval          (WebAuthn challenge bound to the mandate hash)
   -> agent checkout at merchant      (Visa TAP, tag agent-payer-auth + agenticPaymentContainer
                                       carrying the TPA mandate hash, same nonce and key)
@@ -279,11 +305,11 @@ Implemented from the [Visa TAP merchant specification](https://developer.visa.co
 | Piece | Today | To make it real |
 | --- | --- | --- |
 | Airwallex Kit 09 payment (Airi CLI) | `createMockAiriAdapter`: simulates payment mandate, one-time credentials and result report; idempotent per TPA intent | Airi account at app.airi.com, then email devhelp@airwallex.com for allowlisted Airi CLI access. Replace the TODO in `shopper/payments.ts` with the Airi CLI calls (select method, create payment mandate, fetch one-time credentials, report result). Kit 09 places real orders with an Airwallex-issued card, so this needs Raul's go-ahead. |
-| Airwallex sandbox REST | `createAirwallexSandboxAdapter` written (login, `pa/payment_intents/create`, `confirm`) but never run | Sandbox account at sandbox.airwallex.com, set `AWX_CLIENT_ID`, `AWX_API_KEY` and `AWX_TEST_CARD_NUMBER` (the sandbox test card from the guide). Verify field names with the Airwallex docs MCP before relying on it. |
+| Airwallex sandbox REST | `createAirwallexSandboxAdapter` written (login, `pa/payment_intents/create`, `confirm`) but disabled and never run | Sandbox account at sandbox.airwallex.com, set `AWX_CLIENT_ID`, `AWX_API_KEY` and `AWX_TEST_CARD_NUMBER` (the sandbox test card from the guide). Verify field names with the Airwallex docs MCP before relying on it. |
 | Metal USDZ | Default: `createMockMetalClient` (in-memory USDZ, 18 decimals, chain 63825, token `0x000000000000000000000000000000000000b5d5`, instant finality). Live: `createMetalTestnetClient` in `shopper/metal.ts` | Implemented; see "Live Metal mode" below. Fund the payer from the Metal faucet, then run with `METAL_LIVE=1`. |
 | Visa key directory | Local map of trusted agent keys | Visa Intelligent Commerce onboarding and the Visa-hosted well-known key URL. |
 | Merchant | Local demo merchant with a synthetic catalog | Kit 09 targets real merchant sites through browser automation; the TAP and TPA checks stay the same. |
-| Passkey | Synthetic authenticator with real P-256 keys and real WebAuthn verification | Use `client-reference/tpa-client.ts` in a browser with a real platform authenticator. |
+| Passkey | Synthetic authenticator with real P-256 keys and real WebAuthn verification. The demo owner (user 1) is synthetic and exists only in the demo rig. | Use `client-reference/tpa-client.ts` in a browser with a real platform authenticator. |
 | TPA store | Demo in-memory port (`scripts/demo/memory-store.ts`) | The MySQL store in `src/store.ts`. |
 
 ### Live Metal mode (alta-testnet)
@@ -293,11 +319,11 @@ The Metal rail is mocked unless you opt in. With `METAL_LIVE=1` and credentials 
 What the live client does (`shopper/metal.ts`, per docs.metalntwx.com):
 
 1. Checks `eth_chainId == 63825`, `MIP20Factory(0x...0f4c).isMIP20(USDZ)` and `USDZ.decimals() == 18`.
-2. Estimates gas, checks the payer holds amount plus gas (gas is paid in USDZ at 1 base unit per gas), and signs a `0x7f` MIP20 transaction with `@metalntwx/metal-ts` `signMip20Contract` (`transfer(merchant, amount)`, `gasToken` = USDZ).
+2. Estimates gas, refuses if it exceeds the fee cap (1,000,000 USDZ base units), checks the payer holds amount plus gas (gas is paid in USDZ at 1 base unit per gas), runs the fresh execution gate again, and signs a `0x7f` MIP20 transaction with `@metalntwx/metal-ts` `signMip20Contract` (`transfer(merchant, amount)`, `gasToken` = USDZ).
 3. Broadcasts, waits for the receipt, requires `status = success` and a matching `Transfer(payer, merchant, amount)` log from USDZ (anything else, e.g. a ReceivePolicy quarantine, is refused).
 4. Waits until `consensus_status.finalized.number >= receipt.blockNumber` and the canonical block hash matches, then returns the tx hash.
 
-Transfers are serialized per payer, and on a lost response the error carries the tx hash so it is checked rather than resent.
+The tx hash is recorded in the dispatch row before the send, and the fresh execution gate runs once more after that record. Transfers are serialized per payer, and on a lost response the error carries the tx hash so it is checked rather than resent.
 
 Setup (secrets stay in gitignored, `chmod 600` files and are never printed; errors are masked):
 

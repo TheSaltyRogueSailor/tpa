@@ -1,4 +1,4 @@
-# TPA-only source checkpoint — 2026-10-23
+# TPA-only source checkpoint, 2026-10-23
 
 This private source handoff contains the isolated authorization library and the independently locked local attestation ledger. It excludes DingDong's unrelated application source, data, host authentication credentials, financial records and operational accounts. It is not a public sale offer or an assignment of rights.
 
@@ -23,6 +23,21 @@ A five-area review of the parent TPA implementation informed trusted-time/post-l
 
 These are local results and were not run on MySQL 8 or in remote CI.
 
+## v3.1 checkout binding and dispatch freshness (2026-10-29, branch lumi/v3_1-freshness)
+
+`pnpm check`, `pnpm build` and `pnpm audit` passed. `pnpm test` passed **308 tests across 22 files** with the opt-in database suites run against a throwaway local MySQL 9.7.4 server (`TPA_TEST_DATABASE_URL` and `TPA_DISPATCH_TEST_DATABASE_URL`), which was deleted afterwards. Without a database, 204 tests run and 104 are skipped. The mock shopper demo passed 7 of 7 scenarios and the red-team demo passed.
+
+What the new tests cover:
+
+- an approval that expires or is revoked while the transaction id is being recorded: the transaction is never sent, the row stays read-only, and retries, restarts and the SQL store never re-sign or resend it;
+- an approval that expires or is revoked during preparation: the real Metal client, driven by an offline fake RPC, never calls the signer and sends nothing;
+- a recorded payment whose intent is later revoked, or revoked and expired: it still reconciles read-only, while a broken signed proof or a changed checkout still refuses;
+- the owner approval data: network, exact amount, conversion and expiry, zero TPA fee, network fee cap in base units, and the maximum wallet debit.
+
+Three timing demonstrations and three SQL lifecycle tests from an independent review of 1461e69 were adapted: the timing demonstrations became refusal and recovery tests, and the SQL tests were adopted as `tests/v31.sql-lifecycle.test.ts`.
+
+These are local results. The Airwallex rail is a mock; no Airwallex sandbox or provider call was made. Metal live runs use alta-testnet only. `usd-usdz-par` is a demo assumption. None of this is bank certification.
+
 ## Remaining acceptance requirements
 
 The integrating host must supply and validate real authenticated sessions, owner designation, bans/disablement, session revocation, transactional principal locks and exact HTTPS/RP configuration. Real device/browser-origin staging, real MySQL concurrent-operation/restart acceptance, backup/restore drills, independent penetration/security review and purchaser legal/IP review remain required. Local tests are not bank certification, independent face liveness or proof of assets/settlement. No perfect-code or guaranteed-fraud-prevention claim is made.
@@ -31,7 +46,7 @@ TPA is authorization evidence only: no payment execution, custody, conversion, i
 
 ## Reviewed external sources
 
-- https://github.com/vitest-dev/vitest/security/advisories/GHSA-qxg6-89mg-rqv8 — maintainer's patched mocker 4.1.12 release.
-- https://github.com/advisories/GHSA-x5fp-wj9c-mxmx — patched qs 6.16.0 array-limit advisory.
-- https://github.com/advisories/GHSA-4mjr-xmp4-gh2g — patched qs 6.16.0 constructor/isBuffer advisory.
-- https://dev.rootstock.io/developers/quickstart/hardhat/ — local ledger compiler EVM target reference.
+- https://github.com/vitest-dev/vitest/security/advisories/GHSA-qxg6-89mg-rqv8: maintainer's patched mocker 4.1.12 release.
+- https://github.com/advisories/GHSA-x5fp-wj9c-mxmx: patched qs 6.16.0 array-limit advisory.
+- https://github.com/advisories/GHSA-4mjr-xmp4-gh2g: patched qs 6.16.0 constructor/isBuffer advisory.
+- https://dev.rootstock.io/developers/quickstart/hardhat/: local ledger compiler EVM target reference.
