@@ -7,6 +7,7 @@ import {
   type TpaCheckoutMandate, type TpaMandate, type TpaMerchant, type TpaTransferInput,
 } from "./domain.js";
 import { TPA_QUOTE_ID, TPA_TARGET_RAILS, TpaBindingError, checkoutFingerprint, paymentTargetHash, tpaPaymentTargetSchema, type TpaPaymentTarget } from "./binding.js";
+import { tpaApprovalSummary } from "./approval.js";
 import { z } from "zod";
 import { TpaEvidenceError, deriveTpaMandateChallenge, type TpaEvidenceStore, type TpaStoredSignature } from "./evidence.js";
 import type { TpaMandateSigner } from "./signing.js";
@@ -434,7 +435,10 @@ export function createTpaService(input: CreateTpaServiceInput) {
         catch (error) { throw asServiceError(error); }
         if (intent.mandateHash !== expectedHash) throw new TpaServiceError("unavailable", "TPA authorization service is temporarily unavailable.");
         const result = publicIntent(intent);
-        return serverSignature ? { ...result, serverSignature: { keyId: serverSignature.keyId, algorithm: serverSignature.algorithm, signature: serverSignature.signature, valid: true } } : result;
+        // v3.1: the owner approval display data, derived from the signed mandate (network, exact rail amount,
+        // conversion and expiry, TPA fee vs network fee cap, maximum wallet debit).
+        const approval = isBoundCheckoutMandate(mandate) ? { approval: tpaApprovalSummary(mandate) } : {};
+        return serverSignature ? { ...result, ...approval, serverSignature: { keyId: serverSignature.keyId, algorithm: serverSignature.algorithm, signature: serverSignature.signature, valid: true } } : { ...result, ...approval };
       });
     },
 

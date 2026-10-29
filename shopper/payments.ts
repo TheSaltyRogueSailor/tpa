@@ -78,9 +78,19 @@ export function snapshotRequest(request: PaymentRequest): FrozenPaymentRequest {
  *     requires the presented quote id and the rail to equal the signed ones. v3.0 and v2.0 mandates are refused
  *     (checkout_binding_missing / dispatch_not_bound): legacy modes never authorize new external payments.
  *   - target: the payee, rail amount, network, asset, conversion and fee cap come only from the signed paymentTarget.
- *   - freshness: before reserving, after reserving, and again at onSigned (immediately before anything is signed or
- *     sent) the intent is re-read and the mandate, quote and conversion expiry and the consumed state are rechecked.
- *     Expiry during preparation therefore refuses before signing and releases the reservation.
+ *   - two separate checks. (1) Signed proof, used by EVERY path: the intent is consumed under the receipt's mandate
+ *     hash, the v3.1 mandate parses with both binding hashes recomputed, and its canonical hash matches. (2) Fresh
+ *     execution gate, used only before anything new is reserved, signed or sent: signed proof plus "not revoked" plus
+ *     the mandate, quote and conversion expiry. Read-only recovery of a recorded "sent" row needs only (1), so a
+ *     recorded payment can still be reconciled after expiry or after its intent metadata is revoked; it can never
+ *     reserve, sign or send anything new.
+ *   - fresh gate timing: before reserving; after the reservation (lock) wait; at beforeSign, after all async
+ *     preparation and immediately before the signing call; at onSigned before the tx id is persisted; and again
+ *     AFTER the tx id is durably persisted, as the last decision before the send, with nothing awaited between that
+ *     decision and the send. A failure before persistence releases the reservation (nothing was recorded). A failure
+ *     after persistence keeps the row "sent" (read-only: reconcile only, never re-signed or resent).
+ *   - what "expiry" means: the trusted server's authorization and submission decision. It is not a chain-enforced
+ *     deadline and does not promise settlement by that time; a transaction submitted just before expiry may settle later.
  *   - immutable row: the reservation stores the v3.1 snapshot (signed checkout + target + both hashes). Every read
  *     recomputes both hashes from it and requires them to equal the signed mandate.
  *   - unknown outcome: the tx/provider id is recorded ("sent") before broadcast. A "sent" row is only ever reconciled,
@@ -96,10 +106,18 @@ export type DispatchTarget = Readonly<{ payee: string; railAmount: string; signe
 export type DispatchHooks = {
   request: FrozenPaymentRequest;
   target: DispatchTarget;
-  /** Records the tx / provider id ("sent") after a final freshness check. Must be awaited BEFORE broadcast. */
+  /**
+   * Fresh execution gate at the signing boundary. Await it after ALL preparation (network checks, gas, balance) and
+   * call the signer immediately after it resolves, with nothing else awaited in between. Throws when the approval
+   * is expired or revoked; nothing has been recorded, so the reservation is released.
+   */
+  beforeSign(): Promise<void>;
+  /**
+   * Records the tx / provider id ("sent") durably, then runs the final fresh gate AFTER that write. Send immediately
+   * when it resolves, with nothing else awaited in between. If it throws after the write, the row stays "sent" and is
+   * read-only from then on (reconcile only, never re-signed or resent).
+   */
   onSigned(txHash: string): Promise<void>;
-  /** Re-reads the intent and rechecks state and every expiry; throws when the approval is no longer fresh. */
-  confirmFresh(): Promise<void>;
 };
 export type LedgerReconcile = (record: DispatchRecord) => Promise<PaymentResult | null>;
 export interface DispatchLedger {
@@ -243,12 +261,17 @@ export function createDispatchLedger(options: DispatchLedgerOptions): DispatchLe
   const inflight = new Map<string, { fingerprint: string; promise: Promise<PaymentResult> }>();
   const notBound = (why = "Payment does not match a consumed, server-signed TPA mandate.") => new PaymentRefused("dispatch_not_bound", why);
 
-  /** Reads the intent and returns its signed, consumed v3.1 mandate (hashes recomputed). Never checks expiry. */
-  async function signedMandate(request: FrozenPaymentRequest): Promise<TpaBoundCheckoutMandate> {
+  type SignedProof = { intent: BoundIntent; mandate: TpaBoundCheckoutMandate };
+  /**
+   * Immutable signed-proof check, shared by fresh execution and read-only recovery: the intent read is signature
+   * verified (lookupIntent), consumed under the receipt's mandate hash, and its v3.1 mandate parses with both binding
+   * hashes recomputed and the canonical hash matching. It deliberately does NOT check revocation or expiry.
+   */
+  async function signedProof(request: FrozenPaymentRequest): Promise<SignedProof> {
     let intent: BoundIntent | null;
     try { intent = await lookupIntent(request.receipt.intentId); } catch { throw notBound("The TPA intent could not be read and verified (signature, owner or integrity)."); }
     if (!intent || intent.id !== request.receipt.intentId || intent.mandateHash !== request.receipt.mandateHash) throw notBound();
-    if (intent.state !== "consumed" || (intent.revokedAtMs ?? null) !== null) throw notBound("The TPA intent is not consumed or was revoked.");
+    if (intent.state !== "consumed") throw notBound("The TPA intent is not consumed.");
     const version = (intent.mandate as { version?: unknown } | null)?.version;
     if (version === "3.0") throw new PaymentRefused("checkout_binding_missing", "This mandate predates the v3.1 checkout binding; it cannot authorize a new external payment.");
     if (version !== "3.1") throw notBound("Only v3.1 bound checkout mandates authorize payments.");
@@ -257,7 +280,7 @@ export function createDispatchLedger(options: DispatchLedgerOptions): DispatchLe
     let canonical: string;
     try { canonical = canonicalTpaMandate(parsed.data); } catch { throw new PaymentRefused("binding_invalid", "The signed mandate could not be canonicalized."); }
     if (sha256(canonical) !== intent.mandateHash) throw new PaymentRefused("binding_invalid", "The mandate hash does not match the signed mandate.");
-    return parsed.data;
+    return { intent, mandate: parsed.data };
   }
   /** The presented checkout, quote and rail must be exactly what was signed. */
   function bindRequest(mandate: TpaBoundCheckoutMandate, request: FrozenPaymentRequest, rail: string) {
@@ -268,17 +291,23 @@ export function createDispatchLedger(options: DispatchLedgerOptions): DispatchLe
     if (presented !== mandate.checkoutFingerprint) throw new PaymentRefused("fingerprint_mismatch", "The checkout fingerprint does not match the signed mandate.");
     if (mandate.paymentTarget.rail !== rail) throw new PaymentRefused("rail_mismatch", `The signed payment target is for ${mandate.paymentTarget.rail}, not ${rail}.`);
   }
-  function assertFresh(mandate: TpaBoundCheckoutMandate) {
+  /** Fresh execution gate, synchronous part: not revoked, and the approval, quote and conversion are unexpired. */
+  function assertExecutable({ intent, mandate }: SignedProof) {
+    if ((intent.revokedAtMs ?? null) !== null) throw notBound("The TPA intent was revoked; nothing new may be reserved, signed or sent.");
     const at = now();
     if (at >= mandate.expires * 1_000) throw new PaymentRefused("approval_expired", "The approval has expired; a new approval is required.");
     if (at >= mandate.quote.expires * 1_000) throw new PaymentRefused("quote_expired", "The quote has expired; a new approval is required.");
     if (at >= mandate.paymentTarget.conversion.expires * 1_000) throw new PaymentRefused("conversion_expired", "The locked conversion has expired; a new approval is required.");
   }
-  /** Fresh re-read of the intent (state, revocation, signature via lookupIntent) plus every expiry. */
+  /**
+   * Fresh execution gate, full: re-reads the intent (signature, consumed state, revocation via lookupIntent), requires
+   * the same signed mandate, then checks revocation and every expiry. Its last step is synchronous, so a caller that
+   * acts as soon as it resolves acts on this decision.
+   */
   async function confirmFresh(request: FrozenPaymentRequest, mandateHash: string) {
-    const again = await signedMandate(request);
-    if (sha256(canonicalTpaMandate(again)) !== mandateHash) throw new PaymentRefused("dispatch_conflict", "The signed mandate changed while preparing the payment.");
-    assertFresh(again);
+    const again = await signedProof(request);
+    if (sha256(canonicalTpaMandate(again.mandate)) !== mandateHash) throw new PaymentRefused("dispatch_conflict", "The signed mandate changed while preparing the payment.");
+    assertExecutable(again);
   }
   const targetOf = (t: TpaPaymentTarget): DispatchTarget => deepFreeze({ payee: railPayee(t), railAmount: t.railAmount, signed: structuredClone(t) });
   function snapshotOf(mandate: TpaBoundCheckoutMandate): TpaDispatchSnapshot {
@@ -330,12 +359,13 @@ export function createDispatchLedger(options: DispatchLedgerOptions): DispatchLe
   }
 
   async function dispatch(rail: string, request: FrozenPaymentRequest, execute: (hooks: DispatchHooks) => Promise<PaymentResult>, reconcile?: LedgerReconcile) {
-    const mandate = await signedMandate(request);
+    const proof = await signedProof(request); // immutable signed proof only: an existing row is read-only
+    const { mandate } = proof;
     bindRequest(mandate, request, rail);
     const mandateHash = request.receipt.mandateHash;
     const current = await store.get(request.receipt.intentId);
-    if (current) return existingRow(current, mandate, mandateHash, rail, reconcile);
-    assertFresh(mandate); // a fresh reservation needs a fresh approval
+    if (current) return existingRow(current, mandate, mandateHash, rail, reconcile); // allowed after expiry or revocation
+    assertExecutable(proof); // a fresh reservation needs a fresh, unrevoked approval
     const target = targetOf(mandate.paymentTarget);
     const at = now();
     const snapshot = snapshotOf(mandate);
@@ -350,11 +380,16 @@ export function createDispatchLedger(options: DispatchLedgerOptions): DispatchLe
       await confirmFresh(request, mandateHash); // after the reservation (lock) wait
       const result = await execute({
         request, target,
-        confirmFresh: () => confirmFresh(request, mandateHash),
+        beforeSign: () => confirmFresh(request, mandateHash), // after async preparation, at the signing boundary
         onSigned: async txHash => {
-          await confirmFresh(request, mandateHash); // after async preparation, immediately before broadcast
+          await confirmFresh(request, mandateHash); // before the tx id is persisted (failure here: released, nothing recorded)
           if (!(await store.markSent(request.receipt.intentId, txHash, now()))) throw new PaymentRefused("dispatch_conflict", "Dispatch reservation changed before broadcast; not sending.");
-          signedTx = txHash;
+          signedTx = txHash; // recorded: from here the row is never released, re-signed or resent, only reconciled
+          try { await confirmFresh(request, mandateHash); } // AFTER the durable write: the final decision before the send
+          catch (error) {
+            const reason = error instanceof PaymentRefused ? error.reason : "dispatch_not_bound";
+            throw new PaymentRefused(reason, `${error instanceof Error ? error.message : "Approval no longer fresh."} The transaction id ${txHash} was recorded but not sent; the row stays read-only (reconcile only, never re-signed or resent).`);
+          }
         },
       });
       return await settle(request.receipt.intentId, checkResult(result, rail, target, signedTx));
@@ -426,14 +461,15 @@ export function createMockAiriAdapter(ledger: DispatchLedger): PaymentAdapter & 
       let bound: DispatchLedger;
       try { bound = requireBoundLedger(ledger, false, "airwallex-airi"); } catch (error) { return Promise.reject(error); }
       // Kit 09 rule: before any retry, check the prior attempt. One mandate, one payment (enforced by the ledger).
-      return bound.run("airwallex-airi", request, async ({ request: r, target, onSigned }) => {
+      return bound.run("airwallex-airi", request, async ({ request: r, target, beforeSign, onSigned }) => {
         const signed = target.signed;
         if (signed.network !== "airwallex:mock-fixture" || !signed.payee.startsWith("awx-mock-fixture:") || signed.fee.capBaseUnits !== "0") {
           throw new PaymentRefused("destination_unverified", "Airwallex: only the documented mock fixture destination is supported.");
         }
         // TODO(airi): `airi` CLI calls once allowlisted and the destination contract is documented.
+        await beforeSign(); // fresh gate before the provider attempt is created
         const reference = `awx_mock_${digest(r.receipt.intentId, r.checkoutId).slice(0, 20)}`;
-        await onSigned(reference); // durable provider marker, after the final freshness check, before the "provider call"
+        await onSigned(reference); // durable provider marker, then the final fresh gate, then the "provider call" at once
         const result: PaymentResult = {
           rail: "airwallex-airi", mode: "mock", status: "succeeded", reference,
           detail: { paymentMandateId: `pm_mock_${digest(r.receipt.mandateHash).slice(0, 16)}`, oneTimeCard: "**** **** **** 0000 (mock, never exposed to the agent)",
@@ -466,29 +502,41 @@ export interface MetalClient {
   readonly mode: "mock" | "testnet";
   balanceOf(address: string): Promise<bigint>;
   /**
-   * MIP20 transfer of USDZ base units; resolves once the transfer is final. `feeCap` (USDZ base units) is the signed
-   * maximum network fee: a client must refuse (metal_fee_cap) before signing when gasLimit * maxFeePerGas exceeds it.
+   * MIP20 transfer of USDZ base units; resolves once the transfer is final. `feeCap` is the signed maximum NETWORK
+   * (gas) fee in USDZ BASE UNITS (10^-18 USDZ each), not whole USDZ: a client must refuse (metal_fee_cap) before
+   * signing when gasLimit * maxFeePerGas exceeds it. Order: preparation (network, gas, balance), then
+   * `await beforeSign()`, then sign at once; then `await onSigned(txHash)`, then send at once. Nothing else may be
+   * awaited between beforeSign and signing, or between onSigned and the send. The testnet client refuses
+   * (metal_unguarded) without both hooks.
    */
-  transfer(input: { from: string; to: string; amount: bigint; memo: string; feeCap?: bigint; onSigned?: (txHash: string) => Promise<void> }): Promise<{ txHash: string; finalized: boolean }>;
+  transfer(input: { from: string; to: string; amount: bigint; memo: string; feeCap?: bigint; beforeSign?: () => Promise<void>; onSigned?: (txHash: string) => Promise<void> }): Promise<{ txHash: string; finalized: boolean }>;
   /** Look up an already signed transfer by hash; null when it is not (yet) a settled matching transfer. Never resends. */
   reconcile?(input: { txHash: string; from: string; to: string; amount: bigint }): Promise<{ txHash: string; finalized: boolean } | null>;
 }
-/** Mock client. `mockFee` (default 0) is the fee it would charge, so the fee-cap refusal is testable offline. */
-export function createMockMetalClient(balances: Record<string, bigint> = {}, mockFee = 0n): MetalClient & { balances: Map<string, bigint> } {
+/**
+ * Mock client. `mockFee` (default 0) is the network fee it compares with the signed cap, so the fee-cap refusal is
+ * testable offline. Limits: the mock does NOT debit mockFee and records no actual gas paid, so mock results prove
+ * the cap check only, not fee accounting. `signatures` lists every tx id the mock "signed" (to prove the signer
+ * was or was not reached).
+ */
+export function createMockMetalClient(balances: Record<string, bigint> = {}, mockFee = 0n): MetalClient & { balances: Map<string, bigint>; signatures: string[] } {
   const map = new Map(Object.entries(balances).map(([a, b]) => [a.toLowerCase(), b]));
   let nonce = 0;
   const sent = new Set<string>();
+  const signatures: string[] = [];
   return {
-    chainId: METAL_TESTNET.chainId, mode: "mock", balances: map,
+    chainId: METAL_TESTNET.chainId, mode: "mock", balances: map, signatures,
     async reconcile({ txHash }) { return sent.has(txHash) ? { txHash, finalized: true } : null; },
     async balanceOf(address) { return map.get(address.toLowerCase()) ?? 0n; },
-    async transfer({ from, to, amount, memo, feeCap, onSigned }) {
+    async transfer({ from, to, amount, memo, feeCap, beforeSign, onSigned }) {
       if (feeCap === undefined || mockFee > feeCap) throw new PaymentRefused("metal_fee_cap", "Mock Metal: the network fee would exceed the signed fee cap.");
       const have = map.get(from.toLowerCase()) ?? 0n;
       if (amount <= 0n || have < amount) throw new PaymentRefused("insufficient_usdz", "Mock Metal: insufficient USDZ balance.");
+      await beforeSign?.(); // after preparation, immediately before signing
       nonce += 1;
       const txHash = `0x${digest(from, to, amount.toString(), memo, String(nonce))}`;
-      await onSigned?.(txHash);
+      signatures.push(txHash);
+      await onSigned?.(txHash); // durable record + final fresh gate; the "send" follows at once
       map.set(from.toLowerCase(), have - amount);
       map.set(to.toLowerCase(), (map.get(to.toLowerCase()) ?? 0n) + amount);
       sent.add(txHash);
@@ -497,7 +545,11 @@ export function createMockMetalClient(balances: Record<string, bigint> = {}, moc
   };
 }
 // Real client: createMetalTestnetClient / selectMetalClient in ./metal.ts (kept separate so the mock has no chain deps).
-/** cents -> USDZ base units (18 decimals): 1 cent = 10^16 (the "usd-usdz-par" conversion). */
+/**
+ * cents -> USDZ base units (18 decimals): 1 cent = 10^16, the "usd-usdz-par" conversion. DEMO / TESTNET ASSUMPTION:
+ * a fixed nominal 1 USD = 1 USDZ. It is not proof of reserves, of a market peg, of redemption, or of any FX execution.
+ */
+export const USD_USDZ_PAR_CONVERSION_ID = "usd-usdz-par" as const;
 export const centsToUsdz = (cents: string) => BigInt(cents) * 10n ** 16n;
 
 /**
@@ -530,14 +582,14 @@ export function createMetalUsdzAdapter(client: MetalClient, payer: string, ledge
     pay(request) {
       let bound: DispatchLedger;
       try { bound = requireBoundLedger(ledger, live, "metal-usdz"); } catch (error) { return Promise.reject(error); }
-      return bound.run("metal-usdz", request, async ({ onSigned, target, request: r }) => {
+      return bound.run("metal-usdz", request, async ({ beforeSign, onSigned, target, request: r }) => {
         const signed = target.signed;
         if (signed.network !== `evm:${client.chainId}` || signed.asset !== METAL_USDZ_ASSET || signed.decimals !== METAL_TESTNET.decimals || signed.fee.asset !== METAL_USDZ_ASSET) {
           throw new PaymentRefused("metal_target_mismatch", "Metal: the signed target is for a different network or asset than this client.");
         }
         let recorded: string | undefined;
         const tx = await client.transfer({ from: payer, to: target.payee, amount: BigInt(target.railAmount), memo: r.receipt.mandateHash, feeCap: BigInt(signed.fee.capBaseUnits),
-          onSigned: async txHash => { await onSigned(txHash); recorded = txHash; } });
+          beforeSign, onSigned: async txHash => { await onSigned(txHash); recorded = txHash; } });
         // Only the hash the ledger recorded before broadcast may settle the row; anything else stays "sent" for reconcile.
         if (!recorded || !sameTx(tx.txHash, recorded)) throw referenceMismatch(recorded ?? "none");
         return toResult(tx, target);
@@ -549,7 +601,11 @@ export function createMetalUsdzAdapter(client: MetalClient, payer: string, ledge
 /* ------------------------------ target resolvers ------------------------------ */
 /** Server-side destination resolution (run before approval). Unknown merchant or rail: null, never a guess. */
 export type TargetResolverInput = { rail: string; merchant: { id: string }; recipientRef: string; currency: "USD"; sourceAmountBaseUnits: string; nowSeconds: number };
-export const METAL_FEE_CAP_BASE_UNITS = "1000000"; // 1e6 USDZ base units: gasLimit (<= ~250k) * maxFeePerGas (1) with headroom
+/**
+ * Signed network (gas) fee cap for the Metal rail: 1,000,000 USDZ BASE UNITS, which is 0.000000000001 USDZ
+ * (18 decimals). It is NOT 1,000,000 USDZ. Sized as gasLimit (about 250k at most) * maxFeePerGas (1) with headroom.
+ */
+export const METAL_FEE_CAP_BASE_UNITS = "1000000";
 export const CONVERSION_LOCK_SECONDS = 900;
 export function createMetalTargetResolver(merchantAddresses: Record<string, string>, chainId: number = METAL_TESTNET.chainId) {
   const book = Object.freeze({ ...merchantAddresses });
@@ -560,7 +616,8 @@ export function createMetalTargetResolver(merchantAddresses: Record<string, stri
     return {
       rail: "metal-usdz", network: `evm:${chainId}`, asset: METAL_USDZ_ASSET, decimals: 18, recipientRef: input.recipientRef, payee: `evm:${address.toLowerCase()}`,
       sourceCurrency: "USD", sourceAmountBaseUnits: input.sourceAmountBaseUnits, railAmount: centsToUsdz(input.sourceAmountBaseUnits).toString(),
-      conversion: { id: "usd-usdz-par", rateNumerator: (10n ** 16n).toString(), rateDenominator: "1", expires: input.nowSeconds + CONVERSION_LOCK_SECONDS },
+      // conversion: demo/testnet assumption, see USD_USDZ_PAR_CONVERSION_ID
+      conversion: { id: USD_USDZ_PAR_CONVERSION_ID, rateNumerator: (10n ** 16n).toString(), rateDenominator: "1", expires: input.nowSeconds + CONVERSION_LOCK_SECONDS },
       fee: { asset: METAL_USDZ_ASSET, capBaseUnits: METAL_FEE_CAP_BASE_UNITS },
     };
   };

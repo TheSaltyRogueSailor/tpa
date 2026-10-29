@@ -51,8 +51,14 @@ export const DEMO_AIRI_FIXTURES = { [DEMO_MERCHANT.id]: "harbor-supply-mock" } a
  * metal: "auto" (default) uses the real alta-testnet client only when METAL_LIVE=1 and credentials are present,
  * otherwise the mock; "mock" always uses the mock (tests).
  */
+/**
+ * Synthetic demo owner. It exists only inside this demo rig (synthetic passkey, in-memory persistence) and must never
+ * be used as a host identity: an integrating host supplies its own authenticated owner, session and quote provenance.
+ */
+const DEMO_SYNTHETIC_OWNER_ID = 1;
+
 export async function createShopperRig(options: { agentKeyPath?: string; metal?: "auto" | "mock"; env?: NodeJS.ProcessEnv; dispatchStore?: TpaDispatchStore; dispatchJournalPath?: string } = {}) {
-  const owner = { principalId: 1, sessionHash: "a".repeat(64), owner: true as const };
+  const owner = { principalId: DEMO_SYNTHETIC_OWNER_ID, sessionHash: "a".repeat(64), owner: true as const };
   const ctx = { owner, headers: { origin: ORIGIN } };
   const now = () => Date.now();
   const nowSeconds = () => Math.floor(now() / 1000);
@@ -94,7 +100,7 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   const agentTap = createTapSigner(loadOrCreateAgentKey(options.agentKeyPath));
   const keyDirectory = createTapKeyDirectory([agentTap.jwk]);
   // The merchant completes an order only against a settled dispatch for that checkout (a trusted rail result).
-  const merchant = await startDemoMerchant({ verifier: createTapVerifier(keyDirectory), nowSeconds, verifyPayment: async ({ checkoutId, paymentReference, rail, quote }) => {
+  const merchant = await startDemoMerchant({ verifier: createTapVerifier(keyDirectory), nowSeconds, ownerUserId: owner.principalId, verifyPayment: async ({ checkoutId, paymentReference, rail, quote }) => {
     const record = await ledger.settled(checkoutId, paymentReference);
     return !!record && record.status === "succeeded" && record.rail === rail && record.result?.rail === rail && record.result?.reference === paymentReference
       && record.result?.detail?.finalized !== "false" && record.amountBaseUnits === quote.totalBaseUnits && record.currency === quote.currency && record.merchantId === quote.merchant.id;
@@ -143,10 +149,15 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     }
     log({ actor: "tpa", step: "mandate 3.1 created + Ed25519 signed", ok: true, detail: `mandate ${intent.mandateHash.slice(0, 16)}... binds merchant, ${cart.items.length} items, shipping, tax, total, quote ${checkoutId} and the payment target` });
 
+    if ("approval" in intent && intent.approval) {
+      const v = intent.approval;
+      const debit = v.maxWalletDebit.map(d => `${d.formatted} (${d.baseUnits} base units)`).join(" + ");
+      log({ actor: "tpa", step: "approval summary", ok: true, detail: `${v.network} pays ${v.railAmount.formatted} to ${v.payee}; conversion ${v.conversion.id} (${v.conversion.nominal}, expires ${v.conversion.expiresIso}); TPA fee 0; network fee cap ${v.networkFeeCap.baseUnits} base units (${v.networkFeeCap.formatted}); max wallet debit ${debit}` });
+    }
     if (opts.ownerApproves !== false) {
       const started = await service.authenticationOptions(ctx, { intentId: intent.id, consent: true });
       await service.authorize(ctx, { intentId: intent.id, ceremonyId: started.ceremonyId, response: phone.assert(started.options.challenge), consent: true });
-      log({ actor: "owner", step: "passkey approval", ok: true, detail: "owner approved the exact mandate (challenge bound to mandate hash)" });
+      log({ actor: "owner", step: "passkey approval", ok: true, detail: "owner approved the exact mandate (challenge bound to mandate hash; synthetic passkey in this demo, not a human review screen)" });
     } else {
       log({ actor: "agent", step: "skip approval", ok: false, detail: "agent tries to pay without the owner's passkey approval" });
     }

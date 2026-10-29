@@ -24,7 +24,7 @@ export type PaymentVerifier = (input: { checkoutId: string; paymentReference: st
 export type QuoteRecord = { quote: Quote; ownerUserId: number; expiresAtMs: number };
 export const DEMO_QUOTE_TTL_MS = 15 * 60_000;
 
-export async function startDemoMerchant(options: { verifier: TapVerifier; nowSeconds: () => number; verifyPayment?: PaymentVerifier; quoteTtlMs?: number; ownerUserId?: number }) {
+export async function startDemoMerchant(options: { verifier: TapVerifier; nowSeconds: () => number; verifyPayment?: PaymentVerifier; quoteTtlMs?: number; /** The owner each quote is issued for. Required: no default identity. */ ownerUserId: number }) {
   const app = express();
   app.use(express.json());
   const quotes = new Map<string, Quote>();
@@ -70,7 +70,7 @@ export async function startDemoMerchant(options: { verifier: TapVerifier; nowSec
     };
     quotes.set(quote.checkoutId, quote);
     // Demo stand-in for the real owner binding: the demo merchant serves one owner (the rig's principal).
-    quoteMeta.set(quote.checkoutId, { ownerUserId: options.ownerUserId ?? 1, expiresAtMs: options.nowSeconds() * 1_000 + (options.quoteTtlMs ?? DEMO_QUOTE_TTL_MS) });
+    quoteMeta.set(quote.checkoutId, { ownerUserId: options.ownerUserId, expiresAtMs: options.nowSeconds() * 1_000 + (options.quoteTtlMs ?? DEMO_QUOTE_TTL_MS) });
     res.json(quote);
   });
 

@@ -230,7 +230,7 @@ describe("freshness", () => {
     expect(await inner.get(fx.intentId)).toBeNull();
     expect(r.transfer).not.toHaveBeenCalled();
   });
-  it("expiry during async preparation refuses at onSigned, before broadcast, and releases", async () => {
+  it("expiry during async preparation refuses at the signing boundary (never signed), and releases", async () => {
     const issuedAt = Math.floor(Date.now() / 1000);
     const fx = boundFixture({ intentId: "prep", quoteId: "chk_prep", issuedAt });
     let clock = issuedAt * 1000;
@@ -240,8 +240,9 @@ describe("freshness", () => {
     await expect(createMetalUsdzAdapter(slow, PAYER, r.ledger).pay(fx.request())).rejects.toMatchObject({ reason: "approval_expired" });
     expect(await store.get(fx.intentId)).toBeNull();
     expect(await r.payeeBalance()).toBe(0n);
+    expect(r.client.signatures).toHaveLength(0);
   });
-  it("revocation during preparation refuses before broadcast", async () => {
+  it("revocation during preparation refuses before signing", async () => {
     const fx = boundFixture({ intentId: "revoke", quoteId: "chk_rv" });
     let revoked = false;
     const store = createMemoryDispatchStore();
@@ -251,6 +252,7 @@ describe("freshness", () => {
     await expect(createMetalUsdzAdapter(slow, PAYER, ledger).pay(fx.request())).rejects.toMatchObject({ reason: "dispatch_not_bound" });
     expect(await store.get(fx.intentId)).toBeNull();
     expect(await client.balanceOf(PAYEE)).toBe(0n);
+    expect(client.signatures).toHaveLength(0);
   });
   it("after expiry an already-sent payment may still be recovered read-only; nothing is signed or resent", async () => {
     const issuedAt = Math.floor(Date.now() / 1000);

@@ -166,6 +166,10 @@ export const tpaBoundCheckoutMandateSchema = z.object({
   taxBaseUnits: componentUnits,
   amountBaseUnits: amount,
   recipient: z.string().regex(/^user:[1-9][0-9]{0,9}$/),
+  /**
+   * v3.1 meaning: the TPA / platform fee, always zero. It does NOT cover network (gas) fees, which are separate and
+   * bounded by paymentTarget.fee.capBaseUnits (base units of paymentTarget.fee.asset). Never present as a zero total fee.
+   */
   feeBaseUnits: z.literal("0"),
   /** Trusted server quote the owner reviewed (merchant scoped). `expires` is unix seconds. */
   quote: z.object({ merchantId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/), quoteId: z.string().regex(TPA_QUOTE_ID), expires: z.number().int().positive() }).strict(),
