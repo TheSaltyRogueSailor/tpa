@@ -7,6 +7,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createMemoryTpaPersistence } from "../scripts/demo/memory-store.js";
 import { createAiriFixtureResolver, createMetalTargetResolver, combineTargetResolvers } from "../shopper/payments.js";
+import { formatAssetBaseUnits, tpaApprovalSummary } from "../src/approval.js";
 import { checkoutFingerprint, paymentTargetHash } from "../src/binding.js";
 import { createTpaAuthority } from "../src/config.js";
 import { TPA_TTL_SECONDS, boundFingerprintInput, canonicalTpaMandate, isBoundCheckoutMandate, normalizeTpaCheckout, tpaBoundCheckoutMandateSchema, type TpaCheckoutInput } from "../src/domain.js";
@@ -179,5 +180,44 @@ describe("readSignedIntent (the dispatch ledger's only intent source)", () => {
     expect((await memory.evidence.readIntent({ userId: 1, origin: ORIGIN, intentId: intent.id }))?.mandateHash).toBe(intent.mandateHash);
     expect(await memory.evidence.readIntent({ userId: 2, origin: ORIGIN, intentId: intent.id })).toBeNull();
     expect(await memory.evidence.readIntent({ userId: 1, origin: "https://other.test", intentId: intent.id })).toBeNull();
+  });
+});
+
+describe("owner approval display data (v3.1)", () => {
+  it("createIntent returns the approval summary derived from the signed mandate", async () => {
+    const { service } = await rig();
+    const intent = await service.createIntent(ctx, bound());
+    const m = tpaBoundCheckoutMandateSchema.parse(intent.mandate);
+    expect("approval" in intent && intent.approval).toEqual(tpaApprovalSummary(m));
+  });
+  it("Metal: network, exact rail amount, demo conversion, TPA fee vs network fee cap in base units, max wallet debit", async () => {
+    const { service } = await rig();
+    const v = tpaApprovalSummary(tpaBoundCheckoutMandateSchema.parse((await service.createIntent(ctx, bound())).mandate));
+    expect(v).toMatchObject({ mandateVersion: "3.1", rail: "metal-usdz", network: "evm:63825", payee: `evm:${PAYEE}`, quoteId: "q-1",
+      checkoutTotal: { baseUnits: "100", formatted: "1 USD" },
+      railAmount: { symbol: "USDZ", decimals: 18, baseUnits: "1000000000000000000", formatted: "1 USDZ" },
+      conversion: { id: "usd-usdz-par", nominal: "1 USD = 1 USDZ (nominal)", expires: T0 / 1000 + 900 },
+      tpaFee: { baseUnits: "0" },
+      networkFeeCap: { symbol: "USDZ", baseUnits: "1000000", formatted: "0.000000000001 USDZ" },
+      maxWalletDebit: [{ symbol: "USDZ", baseUnits: "1000000000001000000", formatted: "1.000000000001 USDZ" }] });
+    expect(v.conversion.note).toMatch(/^Demo \/ testnet assumption/);
+    expect(v.conversion.note).toContain("Not proof of reserves");
+    expect(v.tpaFee.meaning).toContain("Zero TPA / platform fee");
+    expect(v.tpaFee.meaning).toContain("Network (gas) fees are separate");
+    expect(v.networkFeeCap.meaning).toContain("base units");
+    expect(v.expiryMeaning).toContain("not a chain-enforced deadline");
+    expect(v.conversion.expiresIso).toBe(new Date((T0 / 1000 + 900) * 1000).toISOString());
+  });
+  it("Airwallex: mock fixture, zero network fee cap, labelled as mock", async () => {
+    const { service } = await rig();
+    const v = tpaApprovalSummary(tpaBoundCheckoutMandateSchema.parse((await service.createIntent(ctx, bound({ rail: "airwallex-airi" }))).mandate));
+    expect(v).toMatchObject({ network: "airwallex:mock-fixture", payee: "awx-mock-fixture:review-fixture", railAmount: { formatted: "1 USD" }, networkFeeCap: { baseUnits: "0" }, maxWalletDebit: [{ baseUnits: "100", formatted: "1 USD" }] });
+    expect(v.limits.join(" ")).toContain("mock fixture destination only");
+  });
+  it("formats exact base units without floats", () => {
+    expect(formatAssetBaseUnits("1", 18)).toBe("0.000000000000000001");
+    expect(formatAssetBaseUnits("123456789012345678901234567890", 18)).toBe("123456789012.34567890123456789");
+    expect(formatAssetBaseUnits("1249", 2)).toBe("12.49");
+    expect(formatAssetBaseUnits("0", 18)).toBe("0");
   });
 });
