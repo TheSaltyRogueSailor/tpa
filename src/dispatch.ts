@@ -43,6 +43,8 @@ export type TpaDispatchRecord = {
 
 /** Durable dispatch persistence. Every transition is conditional on the current status, so two workers cannot both advance one row. */
 export interface TpaDispatchStore {
+  /** True for stores that survive restarts and are shared across processes. Live payment adapters refuse anything else. */
+  readonly durable?: boolean;
   /** Atomic reservation: inserts the row, or returns the existing one untouched. */
   reserve(record: TpaDispatchRecord): Promise<{ created: true } | { created: false; existing: TpaDispatchRecord }>;
   get(intentId: string): Promise<TpaDispatchRecord | null>;
@@ -89,6 +91,7 @@ export function createTpaDispatchStore(host: TpaHostAdapter): TpaDispatchStore {
   }
   const t = tpaPaymentDispatches;
   return {
+    durable: true,
     reserve: record => run(async () => {
       try {
         await (await db()).insert(t).values({

@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTpaDispatchStore, type TpaDispatchRecord } from "../src/dispatch.js";
 import { createDispatchLedger, type PaymentRequest } from "../shopper/payments.js";
+import { consumedLookup } from "./support/dispatch.js";
 
 const URL = process.env.TPA_DISPATCH_TEST_DATABASE_URL;
 let pool: mysql.Pool;
@@ -57,8 +58,8 @@ describe.skipIf(!URL)("MySQL dispatch store (tpa_payment_dispatches)", () => {
     const id = "l".repeat(64);
     const req: PaymentRequest = { receipt: { consumed: true, intentId: id, mandateHash: "a".repeat(64) }, merchant: { id: "m", name: "M" }, currency: "USD", amountBaseUnits: "100", checkoutId: "chk_l" };
     const T = { payee: "0xpayee", railAmount: "1" };
-    await expect(createDispatchLedger({ store: createTpaDispatchStore(host()) }).run("metal-usdz", req, T, async ({ onSigned }) => { await onSigned("0xpending"); throw new Error("receipt timeout"); })).rejects.toThrow();
-    const again = createDispatchLedger({ store: createTpaDispatchStore(host()) });
+    await expect(createDispatchLedger({ store: createTpaDispatchStore(host()), lookupIntent: consumedLookup(req) }).run("metal-usdz", req, T, async ({ onSigned }) => { await onSigned("0xpending"); throw new Error("receipt timeout"); })).rejects.toThrow();
+    const again = createDispatchLedger({ store: createTpaDispatchStore(host()), lookupIntent: consumedLookup(req) });
     let signed = 0;
     await expect(again.run("metal-usdz", req, T, async () => { signed += 1; return ok("0xnew"); })).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
     expect(await again.run("metal-usdz", req, T, async () => { signed += 1; return ok("0xnew"); }, async r => ok(r.txHash!))).toMatchObject({ reference: "0xpending" });
