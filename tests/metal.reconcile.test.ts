@@ -7,7 +7,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 import { createMetalTestnetClient } from "../shopper/metal.js";
 import { createMetalUsdzAdapter, type MetalClient, type PaymentRequest } from "../shopper/payments.js";
-import { boundLedger } from "./support/dispatch.js";
+import { boundFixture, boundLedger } from "./support/dispatch.js";
 
 const IS_MIP20 = toFunctionSelector("isMIP20(address)");
 const DECIMALS = toFunctionSelector("decimals()");
@@ -69,13 +69,14 @@ describe("Metal reconcile after a restart checks the network before trusting a r
 });
 
 describe("Metal adapter binds the result to the recorded tx hash and never resends", () => {
-  const request = (): PaymentRequest => ({ receipt: { consumed: true, intentId: "ref-intent", mandateHash: "a".repeat(64) }, merchant: { id: "review-merchant", name: "Review merchant" }, currency: "USD", amountBaseUnits: "100", checkoutId: "ref-checkout" });
+  const fx = boundFixture({ intentId: "ref-intent", quoteId: "ref-checkout", payee });
+  const request = (): PaymentRequest => fx.request();
 
   it("a finalized transfer reporting a different hash than it recorded is not settled; retry reconciles, no resend", async () => {
     const transfer = vi.fn(async ({ onSigned }: { onSigned?: (h: string) => Promise<void> }) => { await onSigned?.(TX); return { txHash: OTHER_TX, finalized: true }; });
     const client: MetalClient = { chainId: 63825, mode: "mock", balanceOf: async () => 0n, transfer, reconcile: async () => null };
-    const ledger = boundLedger([request()]);
-    const rail = createMetalUsdzAdapter(client, payee, { "review-merchant": payee }, ledger);
+    const ledger = boundLedger([fx]);
+    const rail = createMetalUsdzAdapter(client, payee, ledger);
     await expect(rail.pay(request())).rejects.toMatchObject({ reason: "dispatch_result_mismatch" });
     expect(await ledger.settled("ref-checkout", OTHER_TX)).toBeNull();
     await expect(rail.pay(request())).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
@@ -85,8 +86,8 @@ describe("Metal adapter binds the result to the recorded tx hash and never resen
   it("a finalized reconcile result for a different hash than the recorded one is refused, no resend", async () => {
     const transfer = vi.fn(async ({ onSigned }: { onSigned?: (h: string) => Promise<void> }) => { await onSigned?.(TX); throw new Error("receipt timeout"); });
     const client: MetalClient = { chainId: 63825, mode: "mock", balanceOf: async () => 0n, transfer, reconcile: async () => ({ txHash: OTHER_TX, finalized: true }) };
-    const ledger = boundLedger([request()]);
-    const rail = createMetalUsdzAdapter(client, payee, { "review-merchant": payee }, ledger);
+    const ledger = boundLedger([fx]);
+    const rail = createMetalUsdzAdapter(client, payee, ledger);
     await expect(rail.pay(request())).rejects.toThrow("receipt timeout");
     await expect(rail.pay(request())).rejects.toMatchObject({ reason: "dispatch_result_mismatch" });
     expect(await ledger.settled("ref-checkout", OTHER_TX)).toBeNull();
@@ -96,7 +97,7 @@ describe("Metal adapter binds the result to the recorded tx hash and never resen
   it("a non-final reconcile of the recorded hash stays pending", async () => {
     const transfer = vi.fn(async ({ onSigned }: { onSigned?: (h: string) => Promise<void> }) => { await onSigned?.(TX); throw new Error("receipt timeout"); });
     const client: MetalClient = { chainId: 63825, mode: "mock", balanceOf: async () => 0n, transfer, reconcile: async ({ txHash }) => ({ txHash, finalized: false }) };
-    const rail = createMetalUsdzAdapter(client, payee, { "review-merchant": payee }, boundLedger([request()]));
+    const rail = createMetalUsdzAdapter(client, payee, boundLedger([fx]));
     await expect(rail.pay(request())).rejects.toThrow("receipt timeout");
     await expect(rail.pay(request())).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
     expect(transfer).toHaveBeenCalledTimes(1);

@@ -3,7 +3,7 @@ import { planCart } from "../shopper/agent.js";
 import { CATALOG } from "../shopper/catalog.js";
 import { createShopperRig, SHOPPER_PAYER_METAL_ADDRESS, type ShopperRig } from "../shopper/flow.js";
 import { centsToUsdz, createMockAiriAdapter, PaymentRefused } from "../shopper/payments.js";
-import { boundLedger } from "./support/dispatch.js";
+import { boundLedger, reviewCheckout } from "./support/dispatch.js";
 
 const INTENT = { text: "Coffee brewing setup for the office: beans, filters, mugs", budgetCents: 12_000 };
 let rig: ShopperRig;
@@ -69,7 +69,7 @@ describe("TPA Shopper end to end", () => {
 
   it("payment rails refuse to move money without a TPA consume receipt", async () => {
     const rail = createMockAiriAdapter(boundLedger([]));
-    await expect(rail.pay({ receipt: { consumed: false as never, intentId: "x", mandateHash: "0".repeat(64) }, merchant: { id: "m", name: "M" }, currency: "USD", amountBaseUnits: "100", checkoutId: "c" }))
+    await expect(rail.pay({ receipt: { consumed: false as never, intentId: "x", mandateHash: "0".repeat(64) }, checkoutId: "c", checkout: reviewCheckout() }))
       .rejects.toBeInstanceOf(PaymentRefused);
   });
 });

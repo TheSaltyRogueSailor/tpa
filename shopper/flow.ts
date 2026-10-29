@@ -9,14 +9,17 @@ import { dirname } from "node:path";
 import { createTpaAuthority } from "../src/config.js";
 import type { TpaDispatchStore } from "../src/dispatch.js";
 import type { TpaCheckoutInput } from "../src/domain.js";
-import { createTpaService, TpaServiceError } from "../src/service.js";
+import { createTpaService, TpaServiceError, type TpaQuoteResolver } from "../src/service.js";
 import { createTpaMandateSigner, tpaMandateSignerFromEnv } from "../src/signing.js";
 import { syntheticAuthenticator } from "../tests/support/authenticator.js";
 import { createMemoryTpaPersistence } from "../scripts/demo/memory-store.js";
 import { planCart, type Plan, type ShoppingIntent } from "./agent.js";
 import { DEMO_MERCHANT, DEMO_MERCHANT_METAL_ADDRESS, type Product } from "./catalog.js";
-import { startDemoMerchant, type MerchantAttack, type Quote } from "./merchant.js";
-import { createDispatchLedger, createFileDispatchStore, createMemoryDispatchStore, createMetalUsdzAdapter, createMockAiriAdapter, PaymentRefused, type PaymentAdapter, type PaymentResult } from "./payments.js";
+import { startDemoMerchant, type MerchantAttack, type Quote, type QuoteRecord } from "./merchant.js";
+import {
+  combineTargetResolvers, createAiriFixtureResolver, createDispatchLedger, createFileDispatchStore, createMemoryDispatchStore, createMetalTargetResolver,
+  createMetalUsdzAdapter, createMockAiriAdapter, PaymentRefused, type PaymentAdapter, type PaymentResult,
+} from "./payments.js";
 import { selectMetalClient } from "./metal.js";
 import { createTapKeyDirectory, createTapSigner, createTapVerifier, type TapTag } from "./tap.js";
 
@@ -41,6 +44,8 @@ export type ShopOutcome = {
   plan?: Plan; quote?: Quote; intentId?: string; mandateHash?: string; payment?: PaymentResult; orderNumber?: string; events: ShopEvent[];
 };
 export type ShopOptions = ShoppingIntent & { rail?: "airwallex" | "metal"; merchantAttack?: MerchantAttack; ownerApproves?: boolean };
+/** Mock Airwallex destination fixtures (merchant id -> fixture id). Real Airwallex destinations are not mapped yet. */
+export const DEMO_AIRI_FIXTURES = { [DEMO_MERCHANT.id]: "harbor-supply-mock" } as const;
 
 /**
  * metal: "auto" (default) uses the real alta-testnet client only when METAL_LIVE=1 and credentials are present,
@@ -53,7 +58,19 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   const nowSeconds = () => Math.floor(now() / 1000);
   const memory = createMemoryTpaPersistence({ ownerIds: [owner.principalId] });
   const signer = tpaMandateSignerFromEnv() ?? createTpaMandateSigner({ activeKeyId: "tpa-shopper-demo", privateKey: generateKeyPairSync("ed25519").privateKey });
-  const service = createTpaService({ store: memory.store, evidence: memory.evidence, signer, authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now });
+  // Trusted quote and destination resolution for v3.1 (server side; the agent supplies only identifiers).
+  let quoteSource: ((checkoutId: string) => QuoteRecord | null) | null = null;
+  const quotes: TpaQuoteResolver = {
+    async resolve({ merchantId, quoteId }) {
+      const record = quoteSource?.(quoteId);
+      if (!record || record.quote.merchant.id !== merchantId) return null;
+      const { checkoutId, ...checkout } = record.quote;
+      return { merchantId, quoteId: checkoutId, ownerUserId: record.ownerUserId, checkout, expiresAtMs: record.expiresAtMs };
+    },
+  };
+  let metalTargets: ReturnType<typeof createMetalTargetResolver> = () => null;
+  const targets = combineTargetResolvers(input => metalTargets(input), createAiriFixtureResolver(DEMO_AIRI_FIXTURES));
+  const service = createTpaService({ store: memory.store, evidence: memory.evidence, signer, authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now, quotes, targets });
   const phone = syntheticAuthenticator(ORIGIN, RP_ID);
   const reg = await service.registrationOptions(ctx, { label: "Owner's phone", consent: true });
   await service.registrationVerify(ctx, { ceremonyId: reg.ceremonyId, response: phone.register(reg.options.challenge) });
@@ -62,13 +79,15 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   const metalSelection = selectMetalClient({ env: options.metal === "mock" ? {} : env, mockPayer: SHOPPER_PAYER_METAL_ADDRESS, mockBalance: 500n * 10n ** 18n });
   const metal = metalSelection.client;
   const merchantMetalAddress = (metalSelection.live && metalSelection.merchantAddress) || DEMO_MERCHANT_METAL_ADDRESS;
+  metalTargets = createMetalTargetResolver({ [DEMO_MERCHANT.id]: merchantMetalAddress }, metal.chainId);
   // Server-side dispatch ledger: money moves only for an intent the TPA store shows as consumed, for exactly the
   // signed mandate's amount, currency and merchant, once. A host passes createTpaDispatchStore(adapter) (MySQL table
   // tpa_payment_dispatches). This standalone demo has no MySQL, so live Metal runs persist to a gitignored JSON file.
   const journalPath = options.dispatchJournalPath ?? (metalSelection.live ? "artifacts/metal-dispatch-journal.json" : undefined);
   const ledger = createDispatchLedger({
     store: options.dispatchStore ?? (journalPath ? createFileDispatchStore(journalPath) : createMemoryDispatchStore()),
-    lookupIntent: intentId => memory.evidence.readIntent({ userId: owner.principalId, origin: ORIGIN, intentId }),
+    // Owner-bound, integrity-checked read (evidence.readIntent) plus Ed25519 verification of the signed mandate.
+    lookupIntent: intentId => service.readSignedIntent(ctx, { intentId }),
   });
 
   // Visa TAP: the agent's key is published in a (local stand-in for the) scheme key directory.
@@ -80,10 +99,11 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     return !!record && record.status === "succeeded" && record.rail === rail && record.result?.rail === rail && record.result?.reference === paymentReference
       && record.result?.detail?.finalized !== "false" && record.amountBaseUnits === quote.totalBaseUnits && record.currency === quote.currency && record.merchantId === quote.merchant.id;
   } });
+  quoteSource = id => merchant.getQuote(id);
   const rails: Record<"airwallex" | "metal", PaymentAdapter> = {
     airwallex: createMockAiriAdapter(ledger),
     // TPA checks (Proof of Person via passkey, Presence via TAP, Permission via mandate consume) all run before rail.pay().
-    metal: createMetalUsdzAdapter(metal, metalSelection.payer, { [DEMO_MERCHANT.id]: merchantMetalAddress }, ledger),
+    metal: createMetalUsdzAdapter(metal, metalSelection.payer, ledger),
   };
 
   /** Every agent -> merchant request is TAP-signed; checkout calls also carry a signed payment container. */
@@ -113,8 +133,15 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     if (Number(quote.totalBaseUnits) > opts.budgetCents) { log({ actor: "agent", step: "budget guard", ok: false, detail: "quote exceeds budget, not asking for approval" }); return blocked("budget", "over_budget", { plan, quote }); }
 
     const { checkoutId, ...cart } = quote;
-    const intent = await service.createIntent(ctx, { ...cart, consent: true });
-    log({ actor: "tpa", step: "mandate 3.0 created + Ed25519 signed", ok: true, detail: `mandate ${intent.mandateHash.slice(0, 16)}... binds merchant, ${cart.items.length} items, shipping, tax, total` });
+    const railName = opts.rail ?? "airwallex";
+    let intent;
+    try { intent = await service.createIntent(ctx, { merchantId: cart.merchant.id, quoteId: checkoutId, rail: railName === "metal" ? "metal-usdz" : "airwallex-airi", checkout: cart, consent: true }); }
+    catch (error) {
+      const code = error instanceof TpaServiceError ? (error.reason ? `${error.code}:${error.reason}` : error.code) : String(error);
+      log({ actor: "tpa", step: "bound mandate 3.1", ok: false, detail: `BLOCKED ${code}; nothing to approve` });
+      return blocked("tpa", code, { plan, quote });
+    }
+    log({ actor: "tpa", step: "mandate 3.1 created + Ed25519 signed", ok: true, detail: `mandate ${intent.mandateHash.slice(0, 16)}... binds merchant, ${cart.items.length} items, shipping, tax, total, quote ${checkoutId} and the payment target` });
 
     if (opts.ownerApproves !== false) {
       const started = await service.authenticationOptions(ctx, { intentId: intent.id, consent: true });
@@ -131,7 +158,7 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     const paymentRequest = confirmed.json.paymentRequest as TpaCheckoutInput;
 
     let consumed;
-    try { consumed = await service.consume(ctx, { intentId: intent.id, consent: true, checkout: paymentRequest }); }
+    try { consumed = await service.consume(ctx, { intentId: intent.id, consent: true, checkout: paymentRequest, quoteId: checkoutId }); }
     catch (error) {
       const code = error instanceof TpaServiceError ? (error.reason ? `${error.code}:${error.reason}` : error.code) : String(error);
       log({ actor: "tpa", step: "exact-match check at consume", ok: false, detail: `BLOCKED ${code}; no money moved` });
@@ -139,10 +166,10 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     }
     log({ actor: "tpa", step: "exact-match check at consume", ok: true, detail: "merchant payment request matches the approved mandate; mandate consumed (single use)" });
 
-    const rail = rails[opts.rail ?? "airwallex"];
+    const rail = rails[railName];
     let payment: PaymentResult;
     try {
-      payment = await rail.pay({ receipt: { consumed: consumed.consumed, intentId: consumed.intent.id, mandateHash: consumed.intent.mandateHash }, merchant: cart.merchant, currency: "USD", amountBaseUnits: cart.totalBaseUnits, checkoutId });
+      payment = await rail.pay({ receipt: { consumed: consumed.consumed, intentId: consumed.intent.id, mandateHash: consumed.intent.mandateHash }, checkoutId, checkout: paymentRequest });
     } catch (error) {
       return blocked("rail", error instanceof PaymentRefused ? error.reason : String(error), { plan, quote, intentId: intent.id });
     }

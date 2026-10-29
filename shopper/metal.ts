@@ -118,7 +118,8 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
     return { txHash, finalized };
   }
 
-  async function transferOnce(from: string, to: string, amount: bigint, onSigned?: (txHash: string) => Promise<void>) {
+  async function transferOnce(from: string, to: string, amount: bigint, feeCap: bigint | undefined, onSigned?: (txHash: string) => Promise<void>) {
+    if (feeCap === undefined || feeCap < 0n) throw new PaymentRefused("metal_fee_cap", "Metal testnet: a signed fee cap is required.");
     if (getAddress(from) !== account.address) throw new PaymentRefused("payer_mismatch", "Metal testnet: payer address does not match the signing key.");
     if (amount <= 0n) throw new PaymentRefused("invalid_amount", "Metal testnet: amount must be positive.");
     const recipient = getAddress(to);
@@ -128,6 +129,8 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
       const data = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [recipient, amount] });
       const gasLimit = await estimateGasLimit(publicClient, account.address, USDZ, data, GAS_FALLBACK, false);
       const maxFeePerGas = 1n; // eth_gasPrice on Metal is 0x1 (one gas-token base unit per gas)
+      // The signed v3.1 target caps the network fee: refuse before signing if the worst case could exceed it.
+      if (gasLimit * maxFeePerGas > feeCap) throw new PaymentRefused("metal_fee_cap", "Metal testnet: the maximum network fee exceeds the signed fee cap; a new approval is required.");
       const balance = await publicClient.readContract({ address: USDZ, abi: erc20Abi, functionName: "balanceOf", args: [account.address] });
       if (balance < amount + gasLimit * maxFeePerGas) throw new PaymentRefused("insufficient_usdz", "Metal testnet: insufficient USDZ for amount plus gas (fund the payer from the Metal faucet).");
       signed = await signMip20Contract({ publicClient, walletClient, address: USDZ, abi: erc20Abi, functionName: "transfer", args: [recipient, amount], gasToken: USDZ, gasLimit, gasFallback: gasLimit, maxFeePerGas });
@@ -159,9 +162,9 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
       try { return await publicClient.readContract({ address: USDZ, abi: erc20Abi, functionName: "balanceOf", args: [getAddress(address)] }); }
       catch (e) { return fail("metal_read_failed", e); }
     },
-    transfer({ from, to, amount, onSigned }) {
+    transfer({ from, to, amount, feeCap, onSigned }) {
       // The MIP20 transfer has no memo field; the TPA mandate hash stays in the adapter's result detail.
-      const run = queue.then(() => transferOnce(from, to, amount, onSigned));
+      const run = queue.then(() => transferOnce(from, to, amount, feeCap, onSigned));
       queue = run.catch(() => undefined);
       return run;
     },

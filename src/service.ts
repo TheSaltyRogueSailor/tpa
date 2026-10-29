@@ -1,10 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createTpaAuthority, hasTpaRequestOrigin, type OriginHeaders, type TpaAuthority, type TpaAuthorityConfig } from "./config.js";
 import {
-  TPA_CHECKOUT_LEDGER_DOMAIN, TPA_MODE, TPA_TTL_SECONDS, TpaCheckoutError, canonicalTpaMandate, compareCheckoutToMandate, isCheckoutMandate,
-  normalizeTpaCheckout, tpaCheckoutIntentInput, tpaTransferInput, type TpaCheckoutInput, type TpaCheckoutIntentInput, type TpaCheckoutMandate,
-  type TpaMandate, type TpaTransferInput,
+  TPA_BOUND_CHECKOUT_LEDGER_DOMAIN, TPA_CHECKOUT_LEDGER_DOMAIN, TPA_MODE, TPA_TTL_SECONDS, TpaCheckoutError, boundFingerprintInput, canonicalTpaMandate,
+  compareCheckoutToMandate, isBoundCheckoutMandate, isCheckoutMandate, normalizeTpaCheckout, tpaBoundCheckoutMandateSchema, tpaCheckoutInput,
+  tpaCheckoutIntentInput, tpaMerchant, tpaTransferInput, type TpaBoundCheckoutMandate, type TpaCheckoutInput, type TpaCheckoutIntentInput,
+  type TpaCheckoutMandate, type TpaMandate, type TpaMerchant, type TpaTransferInput,
 } from "./domain.js";
+import { TPA_QUOTE_ID, TPA_TARGET_RAILS, TpaBindingError, checkoutFingerprint, paymentTargetHash, tpaPaymentTargetSchema, type TpaPaymentTarget } from "./binding.js";
+import { z } from "zod";
 import { TpaEvidenceError, deriveTpaMandateChallenge, type TpaEvidenceStore, type TpaStoredSignature } from "./evidence.js";
 import type { TpaMandateSigner } from "./signing.js";
 import type { TpaIntentPublic } from "./store.js";
@@ -38,6 +41,29 @@ export class TpaServiceError extends Error {
   }
 }
 
+/** A merchant quote as the server's own record holds it (today: the TAP checkoutId). Never taken from the agent. */
+export type TpaTrustedQuote = Readonly<{ merchantId: string; quoteId: string; ownerUserId: number; checkout: TpaCheckoutInput; expiresAtMs: number }>;
+/** Server-side quote lookup (merchant-scoped). Returns null when the quote is unknown to the server. */
+export interface TpaQuoteResolver { resolve(input: { ownerUserId: number; merchantId: string; quoteId: string }): Promise<TpaTrustedQuote | null> }
+/**
+ * Server-side destination resolution, run BEFORE approval so the target is frozen into the signed mandate.
+ * Returns null when the destination is unknown or unverified (the intent is then refused, never guessed).
+ */
+export interface TpaTargetResolver {
+  resolve(input: { rail: (typeof TPA_TARGET_RAILS)[number]; merchant: TpaMerchant; recipientRef: string; currency: "USD"; sourceAmountBaseUnits: string; nowSeconds: number }): Promise<TpaPaymentTarget | null>;
+}
+
+/** Agent input for a bound (3.1) checkout intent: only identifiers; the terms come from the server's quote record. */
+export const tpaBoundIntentInput = z.object({
+  merchantId: tpaMerchant.shape.id,
+  quoteId: z.string().regex(TPA_QUOTE_ID),
+  rail: z.enum(TPA_TARGET_RAILS),
+  consent: z.literal(true),
+  /** Optional: what the agent showed the owner. Must equal the server quote exactly, or the intent is refused. */
+  checkout: tpaCheckoutInput.optional(),
+}).strict();
+export type TpaBoundIntentInput = z.infer<typeof tpaBoundIntentInput>;
+
 export type TpaRequestContext = Readonly<{
   /** Host-authenticated identity only; never derive this from a URL parameter or request body. */
   owner: TpaAuthenticatedOwner | undefined;
@@ -61,6 +87,9 @@ export type CreateTpaServiceInput = {
    * Default false: new intents must be checkout mandates.
    */
   legacyTransferMandates?: boolean;
+  /** Trusted quote and destination resolution. Both are required to issue bound (3.1) checkout mandates. */
+  quotes?: TpaQuoteResolver;
+  targets?: TpaTargetResolver;
 };
 
 function digest(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
@@ -205,9 +234,79 @@ export function createTpaService(input: CreateTpaServiceInput) {
     return { intent, signature: await verifyLockedIntent(owner, intent) };
   }
 
+  const refuseBinding = (reason: string, message = "The checkout binding could not be established.") => new TpaServiceError("invalid", message, reason);
+
+  /**
+   * Builds a 3.1 mandate from server records only: the quote is resolved from the trusted quote store (owner,
+   * merchant scope and expiry checked) and the payment target is resolved and frozen here, before approval.
+   * Nothing the agent sends besides the identifiers is used, and nothing is filled in later.
+   */
+  async function boundMandate(owner: TpaAuthenticatedOwner, value: unknown, issuedAt: number): Promise<TpaBoundCheckoutMandate> {
+    const parsed = tpaBoundIntentInput.safeParse(value);
+    if (!parsed.success) throw new TpaServiceError("invalid", "The checkout is invalid.", "checkout_invalid");
+    if (!hardened) throw new TpaServiceError("unavailable", "Mandate signing is not configured.", "signer_not_configured");
+    if (!input.quotes || !input.targets) throw new TpaServiceError("unavailable", "Quote and destination resolution are not configured.", "binding_not_configured");
+    const request = parsed.data;
+    let quote: TpaTrustedQuote | null;
+    try { quote = await input.quotes.resolve({ ownerUserId: owner.principalId, merchantId: request.merchantId, quoteId: request.quoteId }); }
+    catch { throw new TpaServiceError("unavailable", "TPA authorization service is temporarily unavailable.", "quote_lookup_failed"); }
+    if (!quote) throw refuseBinding("quote_unknown", "The quote is unknown to the server.");
+    if (quote.quoteId !== request.quoteId || quote.merchantId !== request.merchantId || quote.checkout?.merchant?.id !== request.merchantId) throw refuseBinding("quote_mismatch", "The quote is not this merchant's quote.");
+    if (quote.ownerUserId !== owner.principalId) throw refuseBinding("quote_not_owned", "The quote was not issued for this owner.");
+    if (!Number.isSafeInteger(quote.expiresAtMs) || quote.expiresAtMs <= now()) throw refuseBinding("quote_expired", "The quote has expired.");
+    const checkout = normalizeTpaCheckout(structuredClone(quote.checkout));
+    if (checkout.currency !== "USD") throw refuseBinding("currency_unsupported", "Bound checkout mandates are USD only.");
+    validateRecipient(checkout.currency, checkout.recipient);
+    if (request.checkout !== undefined) {
+      let shown;
+      try { shown = normalizeTpaCheckout(request.checkout); } catch { throw refuseBinding("quote_mismatch", "The checkout shown differs from the server quote."); }
+      if (JSON.stringify(shown) !== JSON.stringify(checkout)) throw refuseBinding("quote_mismatch", "The checkout shown differs from the server quote.");
+    }
+    let resolved: TpaPaymentTarget | null;
+    try { resolved = await input.targets.resolve({ rail: request.rail, merchant: checkout.merchant, recipientRef: checkout.recipient, currency: "USD", sourceAmountBaseUnits: checkout.totalBaseUnits, nowSeconds: issuedAt }); }
+    catch { throw new TpaServiceError("unavailable", "TPA authorization service is temporarily unavailable.", "destination_lookup_failed"); }
+    if (!resolved) throw refuseBinding("destination_unknown", "No verified payment destination for this merchant and rail.");
+    const targetParsed = tpaPaymentTargetSchema.safeParse(structuredClone(resolved));
+    if (!targetParsed.success) throw refuseBinding("destination_invalid", "The resolved payment destination is invalid.");
+    const target = targetParsed.data;
+    if (target.rail !== request.rail || target.recipientRef !== checkout.recipient || target.sourceAmountBaseUnits !== checkout.totalBaseUnits) throw refuseBinding("destination_mismatch", "The resolved payment destination does not match the checkout.");
+    const quoteExpires = Math.floor(quote.expiresAtMs / 1_000);
+    const expires = Math.min(issuedAt + TPA_TTL_SECONDS, quoteExpires, target.conversion.expires);
+    if (expires <= issuedAt) throw refuseBinding("quote_expired", "The quote or conversion expires before it could be approved.");
+    const quoteRef = { merchantId: checkout.merchant.id, quoteId: request.quoteId, expires: quoteExpires };
+    const fingerprintInput = boundFingerprintInput({ ...checkout, amountBaseUnits: checkout.totalBaseUnits, currency: "USD", quote: quoteRef });
+    let fingerprint: string, targetHash: string;
+    try { fingerprint = checkoutFingerprint(fingerprintInput); targetHash = paymentTargetHash(target); }
+    catch (error) { throw refuseBinding(error instanceof TpaBindingError ? error.reason : "binding_invalid"); }
+    return tpaBoundCheckoutMandateSchema.parse({
+      type: "TPA-mandate", version: "3.1", action: "bound-checkout-authorization",
+      issuerUserId: owner.principalId, currency: "USD",
+      merchant: checkout.merchant, items: checkout.items, shipping: checkout.shipping,
+      subtotalBaseUnits: checkout.subtotalBaseUnits, taxBaseUnits: checkout.taxBaseUnits, amountBaseUnits: checkout.totalBaseUnits,
+      recipient: checkout.recipient, feeBaseUnits: "0", quote: quoteRef, paymentTarget: target,
+      checkoutFingerprint: fingerprint, paymentTargetHash: targetHash,
+      nonce: nextId(), issuedAt, expires, scope: "single_use", ledgerDomain: TPA_BOUND_CHECKOUT_LEDGER_DOMAIN,
+    } satisfies TpaBoundCheckoutMandate);
+  }
+
   return {
     authority,
     mode: TPA_MODE,
+
+    /**
+     * Owner-bound, read-only intent for the payment dispatch ledger: the same integrity-checked read as
+     * evidence.readIntent, plus server signature verification for every checkout mandate. Null when absent.
+     */
+    async readSignedIntent(context: TpaRequestContext, value: { intentId: string }): Promise<TpaIntentPublic | null> {
+      const owner = requireOwner(context);
+      if (!evidence || !signer) throw new TpaServiceError("unavailable", "Mandate signing is not configured.", "signer_not_configured");
+      try {
+        const intent = await evidence.readIntent({ userId: owner.principalId, origin: authority.origin, intentId: value.intentId });
+        if (!intent) return null;
+        if (isCheckoutMandate(intent.mandate)) await verifyLockedIntent(owner, intent);
+        return intent;
+      } catch (error) { throw asServiceError(error); }
+    },
 
     async status(context: TpaRequestContext) {
       const base = { enabled: authority.enabled && authority.valid, configuredOrigin: authority.origin, rpID: authority.rpID, ...TPA_MODE };
@@ -273,13 +372,16 @@ export function createTpaService(input: CreateTpaServiceInput) {
      * total) yields a server-signed 3.0 mandate. The legacy transfer shape
      * (currency, amount, recipient) is accepted only with `legacyTransferMandates`.
      */
-    async createIntent(context: TpaRequestContext, value: TpaCheckoutIntentInput | TpaTransferInput) {
+    async createIntent(context: TpaRequestContext, value: TpaCheckoutIntentInput | TpaTransferInput | TpaBoundIntentInput) {
       return audited("create_intent", context, null, async () => {
         const owner = requireMutationContext(context);
-        const isLegacy = !!value && typeof value === "object" && "amountBaseUnits" in value && !("merchant" in value);
+        const isBound = !!value && typeof value === "object" && "quoteId" in value;
+        const isLegacy = !isBound && !!value && typeof value === "object" && "amountBaseUnits" in value && !("merchant" in value);
         const issuedAt = Math.floor(now() / 1_000);
         let mandate: TpaMandate;
-        if (isLegacy) {
+        if (isBound) {
+          mandate = await boundMandate(owner, value, issuedAt);
+        } else if (isLegacy) {
           if (!input.legacyTransferMandates) throw new TpaServiceError("invalid", "Checkout details (merchant, items, shipping, tax and total) are required.", "checkout_required");
           const transfer = tpaTransferInput.parse(value);
           validateRecipient(transfer.currency, transfer.recipient);
@@ -430,7 +532,7 @@ export function createTpaService(input: CreateTpaServiceInput) {
      * present the actual checkout; any difference from the signed mandate is
      * refused with code "terms_changed" and a specific `reason`.
      */
-    async consume(context: TpaRequestContext, value: { intentId: string; consent: true; checkout?: TpaCheckoutInput }) {
+    async consume(context: TpaRequestContext, value: { intentId: string; consent: true; checkout?: TpaCheckoutInput; quoteId?: string }) {
       return audited("consume", context, value?.intentId, async () => {
         const owner = requireMutationContext(context);
         if (value.consent !== true) throw new TpaServiceError("invalid", "Explicit consent is required.");
@@ -447,6 +549,17 @@ export function createTpaService(input: CreateTpaServiceInput) {
                 if (value.checkout === undefined) throw new TpaServiceError("terms_changed", "The actual checkout must be presented and match the signed mandate.", "checkout_required");
                 const difference = compareCheckoutToMandate(locked.mandate, value.checkout);
                 if (difference) throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", difference);
+                if (isBoundCheckoutMandate(locked.mandate)) {
+                  const bound = locked.mandate;
+                  // 3.1: the presented quote must be the signed one, and the fingerprint recomputed from what was
+                  // presented must equal the signed fingerprint (same semantics as the field comparison above).
+                  if (value.quoteId !== bound.quote.quoteId) throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", "quote_mismatch");
+                  const presented = normalizeTpaCheckout(value.checkout);
+                  const recomputed = checkoutFingerprint(boundFingerprintInput({ ...presented, currency: "USD", amountBaseUnits: presented.totalBaseUnits, quote: bound.quote }));
+                  if (recomputed !== bound.checkoutFingerprint) throw new TpaServiceError("terms_changed", "The checkout does not match the mandate the owner approved.", "fingerprint_mismatch");
+                  const at = now();
+                  if (at >= bound.quote.expires * 1_000 || at >= bound.paymentTarget.conversion.expires * 1_000) throw new TpaServiceError("intent", "The authorization intent is unavailable, expired, or no longer active.", "quote_expired");
+                }
               } else if (value.checkout !== undefined) {
                 const presented = value.checkout as Partial<TpaCheckoutInput>;
                 if (presented.totalBaseUnits !== locked.mandate.amountBaseUnits || presented.recipient !== locked.mandate.recipient || presented.currency !== locked.mandate.currency) {

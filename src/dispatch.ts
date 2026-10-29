@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { bigint, mysqlEnum, mysqlTable, text, uniqueIndex, varchar } from "drizzle-orm/mysql-core";
 import type { TpaHostAdapter } from "./host/contracts.js";
+import { railPayee, tpaDispatchSnapshotSchema, type TpaDispatchSnapshot } from "./binding.js";
 
 /**
  * Payment dispatch records: one row per consumed TPA intent, reserved before anything is signed.
@@ -26,6 +27,10 @@ export const tpaPaymentDispatches = mysqlTable("tpa_payment_dispatches", {
   txHash: varchar("txHash", { length: 128 }),
   reference: varchar("reference", { length: 128 }),
   resultJson: text("resultJson"),
+  /** Migration 0003 (v3.1 binding). All three NULL on legacy (pre-3.1) rows, all three set on v3.1 rows. */
+  checkoutFingerprint: varchar("checkoutFingerprint", { length: 64 }),
+  paymentTargetHash: varchar("paymentTargetHash", { length: 64 }),
+  snapshotJson: text("snapshotJson"),
   createdAtMs: bigint("createdAtMs", { mode: "number" }).notNull(),
   updatedAtMs: bigint("updatedAtMs", { mode: "number" }).notNull(),
 }, table => ({
@@ -39,7 +44,14 @@ export type TpaDispatchRecord = {
   /** Rail-level payee (allowlisted Metal address, or merchant id for card rails) and rail amount (e.g. USDZ base units). */
   payee: string; railAmount: string;
   status: TpaDispatchStatus; txHash?: string; result?: TpaDispatchResult; createdAtMs: number; updatedAtMs: number;
+  /**
+   * v3.1 binding (migration 0003). Either all three are present (a v3.1 row, whose snapshot is the immutable signed
+   * terms) or none is (a legacy pre-binding row, historical and read-only). Use isBoundDispatchRecord to tell them apart.
+   */
+  checkoutFingerprint?: string; paymentTargetHash?: string; snapshot?: TpaDispatchSnapshot;
 };
+export type TpaBoundDispatchRecord = TpaDispatchRecord & { checkoutFingerprint: string; paymentTargetHash: string; snapshot: TpaDispatchSnapshot };
+export const isBoundDispatchRecord = (record: TpaDispatchRecord): record is TpaBoundDispatchRecord => record.snapshot !== undefined;
 
 /**
  * Closed-schema validation for a persisted dispatch row and its stored result. Used on every read and write of the
@@ -49,7 +61,7 @@ export type TpaDispatchRecord = {
 export const TPA_DISPATCH_RAILS = ["airwallex-airi", "airwallex-sandbox", "metal-usdz"] as const;
 export const TPA_DISPATCH_MODES = ["mock", "sandbox", "testnet"] as const;
 export class TpaDispatchRecordError extends Error { constructor(readonly field: string) { super(`invalid dispatch record (${field})`); this.name = "TpaDispatchRecordError"; } }
-const RECORD_KEYS = new Set(["intentId", "mandateHash", "checkoutId", "rail", "merchantId", "currency", "amountBaseUnits", "payee", "railAmount", "status", "txHash", "result", "createdAtMs", "updatedAtMs"]);
+const RECORD_KEYS = new Set(["intentId", "mandateHash", "checkoutId", "rail", "merchantId", "currency", "amountBaseUnits", "payee", "railAmount", "status", "txHash", "result", "createdAtMs", "updatedAtMs", "checkoutFingerprint", "paymentTargetHash", "snapshot"]);
 const RESULT_KEYS = new Set(["rail", "mode", "status", "reference", "detail"]);
 const TOKEN = /^[\x21-\x7e]{1,128}$/; // printable ASCII, no spaces or control characters
 const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
@@ -102,6 +114,20 @@ export function parseDispatchRecord(value: unknown): TpaDispatchRecord {
   if (record.status === "reserved" && (record.txHash !== undefined || record.result !== undefined)) throw new TpaDispatchRecordError("status");
   if (record.status === "sent" && (record.txHash === undefined || record.result !== undefined)) throw new TpaDispatchRecordError("status");
   if (record.status === "succeeded" && record.result === undefined) throw new TpaDispatchRecordError("status");
+  // v3.1 binding: all or nothing, and the snapshot must recompute to both hashes and agree with every row column.
+  const bindingKeys = [v.checkoutFingerprint, v.paymentTargetHash, v.snapshot].filter(x => x !== undefined).length;
+  if (bindingKeys !== 0 && bindingKeys !== 3) throw new TpaDispatchRecordError("binding");
+  if (bindingKeys === 3) {
+    const parsed = tpaDispatchSnapshotSchema.safeParse(v.snapshot);
+    if (!parsed.success) throw new TpaDispatchRecordError("snapshot");
+    const snap = parsed.data;
+    if (str(v.checkoutFingerprint, /^[a-f0-9]{64}$/, "checkoutFingerprint") !== snap.checkoutFingerprint) throw new TpaDispatchRecordError("checkoutFingerprint");
+    if (str(v.paymentTargetHash, /^[a-f0-9]{64}$/, "paymentTargetHash") !== snap.paymentTargetHash) throw new TpaDispatchRecordError("paymentTargetHash");
+    if (snap.target.rail !== record.rail || snap.checkout.quote.quoteId !== record.checkoutId || snap.checkout.merchant.id !== record.merchantId
+      || snap.checkout.currency !== record.currency || snap.checkout.totalBaseUnits !== record.amountBaseUnits
+      || railPayee(snap.target) !== record.payee || snap.target.railAmount !== record.railAmount) throw new TpaDispatchRecordError("snapshot.columns");
+    record.checkoutFingerprint = snap.checkoutFingerprint; record.paymentTargetHash = snap.paymentTargetHash; record.snapshot = snap;
+  }
   // A settled Metal row must name the transaction it recorded before broadcast.
   if (metal && record.status === "succeeded" && (record.txHash === undefined || record.result!.reference.toLowerCase() !== record.txHash.toLowerCase())) throw new TpaDispatchRecordError("result.reference");
   return record;
@@ -129,11 +155,16 @@ type Row = typeof tpaPaymentDispatches.$inferSelect;
 const fromRow = (row: Row): TpaDispatchRecord => {
   let result: unknown;
   if (row.resultJson != null) { try { result = JSON.parse(row.resultJson); } catch { throw new TpaDispatchRecordError("resultJson"); } }
+  let snapshot: unknown;
+  if (row.snapshotJson != null) { try { snapshot = JSON.parse(row.snapshotJson); } catch { throw new TpaDispatchRecordError("snapshotJson"); } }
   const record = parseDispatchRecord({
     intentId: row.intentId, mandateHash: row.mandateHash, checkoutId: row.checkoutId, rail: row.rail, merchantId: row.merchantId, currency: row.currency,
     amountBaseUnits: row.amountBaseUnits, payee: row.payee, railAmount: row.railAmount, status: row.status,
     ...(row.txHash != null ? { txHash: row.txHash } : {}), ...(result !== undefined ? { result } : {}),
     createdAtMs: Number(row.createdAtMs), updatedAtMs: Number(row.updatedAtMs),
+    ...(row.checkoutFingerprint != null ? { checkoutFingerprint: row.checkoutFingerprint } : {}),
+    ...(row.paymentTargetHash != null ? { paymentTargetHash: row.paymentTargetHash } : {}),
+    ...(snapshot !== undefined ? { snapshot } : {}),
   });
   // The indexed reference column must agree with the stored result.
   if ((row.reference ?? null) !== (record.result?.reference ?? null)) throw new TpaDispatchRecordError("reference");
@@ -171,7 +202,9 @@ export function createTpaDispatchStore(host: TpaHostAdapter): TpaDispatchStore {
         await (await db()).insert(t).values({
           intentId: record.intentId, mandateHash: record.mandateHash, checkoutId: record.checkoutId, rail: record.rail, merchantId: record.merchantId,
           currency: record.currency, amountBaseUnits: record.amountBaseUnits, payee: record.payee, railAmount: record.railAmount,
-          status: "reserved", txHash: null, reference: null, resultJson: null, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs,
+          status: "reserved", txHash: null, reference: null, resultJson: null,
+          checkoutFingerprint: record.checkoutFingerprint ?? null, paymentTargetHash: record.paymentTargetHash ?? null,
+          snapshotJson: record.snapshot !== undefined ? JSON.stringify(record.snapshot) : null, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs,
         });
         return { created: true as const };
       } catch (error) {

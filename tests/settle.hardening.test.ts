@@ -159,7 +159,7 @@ describe("finding 3: the first Metal receipt must belong to the recorded transac
     const payerKey = generatePrivateKey();
     const client = createMetalTestnetClient({ rpcUrl: "http://offline.invalid", payerKey, transport: rpc.transport, receiptTimeoutMs: 5_000 });
     const recorded: string[] = [];
-    await expect(client.transfer({ from: privateKeyToAccount(payerKey).address, to: PAYEE, amount: 10n ** 18n, memo: "m", onSigned: async h => { recorded.push(h); } }))
+    await expect(client.transfer({ from: privateKeyToAccount(payerKey).address, to: PAYEE, amount: 10n ** 18n, memo: "m", feeCap: 1_000_000n, onSigned: async h => { recorded.push(h); } }))
       .rejects.toMatchObject({ reason: "metal_reference_mismatch" });
     expect(recorded).toHaveLength(1);
     expect(rpc.calls.filter(m => m === "eth_sendRawTransaction")).toHaveLength(1);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TPA_QUOTE_ID, checkoutFingerprint, paymentTargetHash, paymentTargetTuple, tpaPaymentTargetSchema } from "./binding.js";
 
 /** Explicit product boundary for this authorization pilot. */
 export const TPA_MODE = {
@@ -144,17 +145,103 @@ export const tpaCheckoutMandateSchema = z.object({
 });
 export type TpaCheckoutMandate = z.infer<typeof tpaCheckoutMandateSchema>;
 
-/** Any persisted mandate: legacy transfer (2.0) or checkout (3.0). */
-export const tpaMandateSchema = z.union([tpaTransferMandateSchema, tpaCheckoutMandateSchema]);
-export type TpaMandate = TpaTransferMandate | TpaCheckoutMandate;
+/* ------------------------------------------------------------------------- */
+/* Version 3.1: bound checkout mandate. Everything in 3.0 plus the trusted     */
+/* server quote, the frozen payment target, and both binding hashes, all      */
+/* inside the signed canonical tuple. 2.0 and 3.0 bytes and domains unchanged. */
+/* ------------------------------------------------------------------------- */
 
-export function isCheckoutMandate(mandate: TpaMandate): mandate is TpaCheckoutMandate {
-  return mandate.version === "3.0";
+export const TPA_BOUND_CHECKOUT_LEDGER_DOMAIN = "dingdong-tpa/checkout-binding/attestation-v3.1" as const;
+
+export const tpaBoundCheckoutMandateSchema = z.object({
+  type: z.literal("TPA-mandate"),
+  version: z.literal("3.1"),
+  action: z.literal("bound-checkout-authorization"),
+  issuerUserId: z.number().int().positive(),
+  currency: z.literal("USD"),
+  merchant: tpaMerchant,
+  items: z.array(tpaLineItem).min(1).max(TPA_MAX_LINE_ITEMS),
+  shipping: tpaShipping,
+  subtotalBaseUnits: componentUnits,
+  taxBaseUnits: componentUnits,
+  amountBaseUnits: amount,
+  recipient: z.string().regex(/^user:[1-9][0-9]{0,9}$/),
+  feeBaseUnits: z.literal("0"),
+  /** Trusted server quote the owner reviewed (merchant scoped). `expires` is unix seconds. */
+  quote: z.object({ merchantId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/), quoteId: z.string().regex(TPA_QUOTE_ID), expires: z.number().int().positive() }).strict(),
+  /** Frozen before approval from trusted server resolution; never filled in later. */
+  paymentTarget: tpaPaymentTargetSchema,
+  checkoutFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  paymentTargetHash: z.string().regex(/^[a-f0-9]{64}$/),
+  nonce: z.string().regex(/^[a-f0-9]{64}$/),
+  issuedAt: z.number().int().nonnegative(),
+  expires: z.number().int().positive(),
+  scope: z.literal("single_use"),
+  ledgerDomain: z.literal(TPA_BOUND_CHECKOUT_LEDGER_DOMAIN),
+}).strict().superRefine((mandate, context) => {
+  const issue = (message: string) => context.addIssue({ code: "custom", message });
+  if (mandate.expires <= mandate.issuedAt || mandate.expires - mandate.issuedAt > TPA_TTL_SECONDS) issue("Invalid mandate lifetime.");
+  if (mandate.expires > mandate.quote.expires || mandate.expires > mandate.paymentTarget.conversion.expires) issue("Mandate outlives its quote or conversion.");
+  for (let index = 1; index < mandate.items.length; index += 1) {
+    if (!(mandate.items[index - 1]!.sku < mandate.items[index]!.sku)) { issue("Line items must be in canonical SKU order with no duplicate SKU."); break; }
+  }
+  const subtotal = itemsSubtotal(mandate.items);
+  if (BigInt(mandate.subtotalBaseUnits) !== subtotal) issue("Subtotal does not equal the sum of line items.");
+  if (BigInt(mandate.amountBaseUnits) !== subtotal + BigInt(mandate.shipping.costBaseUnits) + BigInt(mandate.taxBaseUnits)) issue("Total does not equal subtotal + shipping + tax.");
+  if (mandate.quote.merchantId !== mandate.merchant.id) issue("Quote is not scoped to this merchant.");
+  const target = mandate.paymentTarget;
+  if (target.recipientRef !== mandate.recipient || target.sourceCurrency !== mandate.currency || target.sourceAmountBaseUnits !== mandate.amountBaseUnits) issue("Payment target does not match the checkout.");
+  try { if (checkoutFingerprint(boundFingerprintInput(mandate)) !== mandate.checkoutFingerprint) issue("checkoutFingerprint does not match the checkout."); }
+  catch { issue("checkoutFingerprint input is invalid."); }
+  try { if (paymentTargetHash(target) !== mandate.paymentTargetHash) issue("paymentTargetHash does not match the payment target."); }
+  catch { issue("paymentTarget is invalid."); }
+});
+export type TpaBoundCheckoutMandate = z.infer<typeof tpaBoundCheckoutMandateSchema>;
+
+/** The fingerprint input of a signed 3.1 mandate (the same fields compareCheckoutToMandate checks, plus the quote). */
+export function boundFingerprintInput(mandate: Pick<TpaBoundCheckoutMandate, "currency" | "merchant" | "recipient" | "items" | "shipping" | "subtotalBaseUnits" | "taxBaseUnits" | "amountBaseUnits" | "quote">) {
+  return {
+    currency: mandate.currency, merchant: { id: mandate.merchant.id, name: mandate.merchant.name }, recipient: mandate.recipient,
+    items: mandate.items.map(i => ({ sku: i.sku, qty: i.qty, unitPriceBaseUnits: i.unitPriceBaseUnits })),
+    shipping: { method: mandate.shipping.method, costBaseUnits: mandate.shipping.costBaseUnits },
+    subtotalBaseUnits: mandate.subtotalBaseUnits, taxBaseUnits: mandate.taxBaseUnits, totalBaseUnits: mandate.amountBaseUnits,
+    quote: { merchantId: mandate.quote.merchantId, quoteId: mandate.quote.quoteId },
+  } as const;
+}
+
+/** Any persisted mandate: legacy transfer (2.0), checkout (3.0) or bound checkout (3.1). */
+export const tpaMandateSchema = z.union([tpaTransferMandateSchema, tpaCheckoutMandateSchema, tpaBoundCheckoutMandateSchema]);
+export type TpaMandate = TpaTransferMandate | TpaCheckoutMandate | TpaBoundCheckoutMandate;
+export type TpaAnyCheckoutMandate = TpaCheckoutMandate | TpaBoundCheckoutMandate;
+
+/**
+ * True for every mandate that binds a checkout (3.0 and 3.1). Every lifecycle gate (store, demo memory store,
+ * service) keys signed-only behavior off this, so 3.1 can never fall into the unsigned legacy path.
+ */
+export function isCheckoutMandate(mandate: TpaMandate): mandate is TpaAnyCheckoutMandate {
+  return mandate.version === "3.0" || mandate.version === "3.1";
+}
+export function isBoundCheckoutMandate(mandate: TpaMandate): mandate is TpaBoundCheckoutMandate {
+  return mandate.version === "3.1";
 }
 
 /** Fixed ordered tuple: no arbitrary JSON fields and no floating-point amounts. */
 export function canonicalTpaMandate(value: unknown): string {
   const mandate = tpaMandateSchema.parse(value);
+  if (mandate.version === "3.1") {
+    // Explicit 3.1 branch with its own domain; the 2.0 and 3.0 tuples below are byte-for-byte unchanged.
+    return JSON.stringify([
+      mandate.type, mandate.version, mandate.action, mandate.issuerUserId, mandate.currency,
+      [mandate.merchant.id, mandate.merchant.name],
+      mandate.items.map(item => [item.sku, item.qty, item.unitPriceBaseUnits]),
+      [mandate.shipping.method, mandate.shipping.costBaseUnits],
+      mandate.subtotalBaseUnits, mandate.taxBaseUnits, mandate.amountBaseUnits, mandate.recipient, mandate.feeBaseUnits,
+      [mandate.quote.merchantId, mandate.quote.quoteId, mandate.quote.expires],
+      paymentTargetTuple(mandate.paymentTarget),
+      mandate.checkoutFingerprint, mandate.paymentTargetHash,
+      mandate.nonce, mandate.issuedAt, mandate.expires, mandate.scope, mandate.ledgerDomain,
+    ]);
+  }
   if (mandate.version === "2.0") {
     return JSON.stringify([
       mandate.type, mandate.version, mandate.action, mandate.issuerUserId, mandate.currency,
@@ -162,6 +249,7 @@ export function canonicalTpaMandate(value: unknown): string {
       mandate.nonce, mandate.issuedAt, mandate.expires, mandate.scope, mandate.ledgerDomain,
     ]);
   }
+  if (mandate.version !== "3.0") throw new Error("Unknown TPA mandate version.");
   return JSON.stringify([
     mandate.type, mandate.version, mandate.action, mandate.issuerUserId, mandate.currency, mandate.paymentNetwork,
     [mandate.merchant.id, mandate.merchant.name],
@@ -191,7 +279,7 @@ export type TpaCheckoutIntentInput = z.infer<typeof tpaCheckoutIntentInput>;
 export type TpaCheckoutRefusalReason =
   | "checkout_invalid" | "checkout_duplicate_sku" | "checkout_total_inconsistent" | "checkout_required"
   | "currency_mismatch" | "recipient_mismatch" | "merchant_mismatch" | "items_mismatch"
-  | "shipping_mismatch" | "tax_mismatch" | "total_mismatch";
+  | "shipping_mismatch" | "tax_mismatch" | "total_mismatch" | "quote_mismatch";
 
 export class TpaCheckoutError extends Error {
   constructor(readonly reason: TpaCheckoutRefusalReason) { super(reason); this.name = "TpaCheckoutError"; }
@@ -221,7 +309,7 @@ export function normalizeTpaCheckout(value: unknown): TpaNormalizedCheckout {
 }
 
 /** Exact match of an actual checkout against a signed checkout mandate. Returns the first difference, or null. */
-export function compareCheckoutToMandate(mandate: TpaCheckoutMandate, value: unknown): TpaCheckoutRefusalReason | null {
+export function compareCheckoutToMandate(mandate: TpaAnyCheckoutMandate, value: unknown): TpaCheckoutRefusalReason | null {
   let checkout: TpaNormalizedCheckout;
   try { checkout = normalizeTpaCheckout(value); }
   catch (error) { return error instanceof TpaCheckoutError ? error.reason : "checkout_invalid"; }

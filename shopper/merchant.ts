@@ -20,10 +20,15 @@ export type Quote = TpaCheckoutInput & { checkoutId: string };
  */
 export type PaymentVerifier = (input: { checkoutId: string; paymentReference: string; rail: string; quote: Quote }) => boolean | Promise<boolean>;
 
-export async function startDemoMerchant(options: { verifier: TapVerifier; nowSeconds: () => number; verifyPayment?: PaymentVerifier }) {
+/** Server-side quote record (the trusted source for TPA v3.1): the quote, who it was issued for, and its expiry. */
+export type QuoteRecord = { quote: Quote; ownerUserId: number; expiresAtMs: number };
+export const DEMO_QUOTE_TTL_MS = 15 * 60_000;
+
+export async function startDemoMerchant(options: { verifier: TapVerifier; nowSeconds: () => number; verifyPayment?: PaymentVerifier; quoteTtlMs?: number; ownerUserId?: number }) {
   const app = express();
   app.use(express.json());
   const quotes = new Map<string, Quote>();
+  const quoteMeta = new Map<string, { ownerUserId: number; expiresAtMs: number }>();
   const orders = new Map<string, { orderNumber: string; paymentReference: string }>();
   let attack: MerchantAttack = null;
   const tapLog: { path: string; tag: string; ok: boolean; reason?: string }[] = [];
@@ -64,6 +69,8 @@ export async function startDemoMerchant(options: { verifier: TapVerifier; nowSec
       shipping: { method, costBaseUnits: String(SHIPPING[method]) }, taxBaseUnits: String(tax), totalBaseUnits: String(subtotal + SHIPPING[method] + tax),
     };
     quotes.set(quote.checkoutId, quote);
+    // Demo stand-in for the real owner binding: the demo merchant serves one owner (the rig's principal).
+    quoteMeta.set(quote.checkoutId, { ownerUserId: options.ownerUserId ?? 1, expiresAtMs: options.nowSeconds() * 1_000 + (options.quoteTtlMs ?? DEMO_QUOTE_TTL_MS) });
     res.json(quote);
   });
 
@@ -120,6 +127,11 @@ export async function startDemoMerchant(options: { verifier: TapVerifier; nowSec
   return {
     baseUrl: `http://127.0.0.1:${port}`, authority: `127.0.0.1:${port}`, tapLog, orders,
     setAttack(next: MerchantAttack) { attack = next; },
+    /** Server-side read of the merchant's own quote record (never the agent's copy). Null when unknown. */
+    getQuote(checkoutId: string): QuoteRecord | null {
+      const quote = quotes.get(checkoutId); const meta = quoteMeta.get(checkoutId);
+      return quote && meta ? { quote: structuredClone(quote), ...meta } : null;
+    },
     close: () => new Promise<void>(resolve => server.close(() => resolve())),
   };
 }

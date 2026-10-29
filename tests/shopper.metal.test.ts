@@ -5,7 +5,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 import { maskSecrets, parseEnvFile, selectMetalClient } from "../shopper/metal.js";
 import { createFileDispatchStore, createMetalUsdzAdapter, PaymentRefused, type ConsumeReceipt } from "../shopper/payments.js";
-import { boundLedger } from "./support/dispatch.js";
+import { boundLedger, reviewCheckout } from "./support/dispatch.js";
 
 // Obviously fake values: nothing here talks to a network.
 const FAKE_KEY = `0x${"11".repeat(32)}`;
@@ -54,9 +54,9 @@ describe("Metal live/mock selection", () => {
 
   it("the live adapter still refuses to pay without a TPA consume receipt (no network call)", async () => {
     const s = selectMetalClient({ ...base, env: { METAL_LIVE: "1", METAL_RPC_URL: FAKE_URL, METAL_PAYER_KEY: FAKE_KEY }, files: [] });
-    const adapter = createMetalUsdzAdapter(s.client, s.payer, { m: "0x00000000000000000000000000000000000ba5e1" }, boundLedger([], createFileDispatchStore(join(mkdtempSync(join(tmpdir(), "metal-ledger-")), "journal.json"))));
+    const adapter = createMetalUsdzAdapter(s.client, s.payer, boundLedger([], createFileDispatchStore(join(mkdtempSync(join(tmpdir(), "metal-ledger-")), "journal.json"))));
     const bad = { consumed: false, intentId: "", mandateHash: "x" } as unknown as ConsumeReceipt;
-    await expect(adapter.pay({ receipt: bad, merchant: { id: "m", name: "M" }, currency: "USD", amountBaseUnits: "100", checkoutId: "c" })).rejects.toMatchObject({ reason: "no_tpa_receipt" });
+    await expect(adapter.pay({ receipt: bad, checkoutId: "c", checkout: reviewCheckout() })).rejects.toMatchObject({ reason: "no_tpa_receipt" });
   });
 });
 
