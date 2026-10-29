@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { createShopperRig } from "../shopper/flow.js";
 import {
   createAirwallexSandboxAdapter, createDispatchLedger, createFileDispatchStore, createMemoryDispatchStore, createMetalUsdzAdapter, createMockMetalClient,
   type DispatchLedger, type MetalClient, type PaymentRequest, type PaymentResult,
@@ -155,5 +156,16 @@ describe("results are checked before a dispatch counts as paid", () => {
     const ledger = boundLedger([request()]);
     await expect(ledger.run("metal-usdz", request(), target, async () => okay("0xwrong", "airwallex-airi"))).rejects.toMatchObject({ reason: "dispatch_result_mismatch" });
     expect(await ledger.settled("review-checkout", "0xwrong")).toBeNull();
+  });
+
+  it("a merchant that refuses the order is reported separately from PAID", async () => {
+    const memory = createMemoryDispatchStore();
+    const rig = await createShopperRig({ metal: "mock", dispatchStore: { ...memory, findSettled: async () => null } });
+    try {
+      const r = await rig.shop({ text: "Coffee brewing setup for the office: beans, filters, mugs", budgetCents: 12_000 });
+      expect(r.outcome).toBe("MERCHANT_FAILED");
+      expect(r.payment?.status).toBe("succeeded");
+      expect(r.orderNumber).toBeUndefined();
+    } finally { await rig.close(); }
   });
 });

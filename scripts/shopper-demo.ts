@@ -29,7 +29,7 @@ async function scenario(name: string, expected: "PAID" | "BLOCKED", run: () => P
   say(cyan(`== ${name} ==`));
   const r = await run();
   await printEvents(r.events);
-  const badge = r.outcome === "PAID" ? green(" PAID ") : red(" BLOCKED ");
+  const badge = r.outcome === "PAID" ? green(" PAID ") : red(` ${r.outcome} `);
   const why = r.outcome === "PAID" ? `order ${r.orderNumber}, ${r.payment?.rail} ref ${r.payment?.reference.slice(0, 24)}...` : `${r.blockedBy}: ${r.reason}`;
   say(`  ${badge} ${why}${r.outcome === "BLOCKED" && MEANING[`${r.blockedBy}:${r.reason}`] ? dim(` (${MEANING[`${r.blockedBy}:${r.reason}`]})`) : ""}`);
   say();

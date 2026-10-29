@@ -36,7 +36,8 @@ export function loadOrCreateAgentKey(path: string | undefined): KeyObject {
 
 export type ShopEvent = { actor: "agent" | "merchant" | "tpa" | "owner" | "rail" | "attacker"; step: string; ok: boolean; detail: string };
 export type ShopOutcome = {
-  outcome: "PAID" | "BLOCKED"; blockedBy?: "tpa" | "tap" | "budget" | "rail"; reason?: string;
+  /** PAID only when the rail settled AND the merchant confirmed the order. MERCHANT_FAILED: money settled, no order. */
+  outcome: "PAID" | "BLOCKED" | "MERCHANT_FAILED"; blockedBy?: "tpa" | "tap" | "budget" | "rail" | "merchant"; reason?: string;
   plan?: Plan; quote?: Quote; intentId?: string; mandateHash?: string; payment?: PaymentResult; orderNumber?: string; events: ShopEvent[];
 };
 export type ShopOptions = ShoppingIntent & { rail?: "airwallex" | "metal"; merchantAttack?: MerchantAttack; ownerApproves?: boolean };
@@ -76,7 +77,8 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   // The merchant completes an order only against a settled dispatch for that checkout (a trusted rail result).
   const merchant = await startDemoMerchant({ verifier: createTapVerifier(keyDirectory), nowSeconds, verifyPayment: async ({ checkoutId, paymentReference, rail, quote }) => {
     const record = await ledger.settled(checkoutId, paymentReference);
-    return !!record && record.rail === rail && record.amountBaseUnits === quote.totalBaseUnits && record.currency === quote.currency && record.merchantId === quote.merchant.id;
+    return !!record && record.status === "succeeded" && record.rail === rail && record.result?.rail === rail && record.result?.reference === paymentReference
+      && record.result?.detail?.finalized !== "false" && record.amountBaseUnits === quote.totalBaseUnits && record.currency === quote.currency && record.merchantId === quote.merchant.id;
   } });
   const rails: Record<"airwallex" | "metal", PaymentAdapter> = {
     airwallex: createMockAiriAdapter(ledger),
@@ -148,7 +150,11 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
 
     const done = await tapRequest("POST", `/checkout/${checkoutId}/complete`, "agent-payer-auth", {}, { checkoutId, paymentReference: payment.reference, rail: rail.rail });
     log({ actor: "merchant", step: "order confirmed (payment verified against the settled dispatch)", ok: done.status === 200, detail: done.status === 200 ? `order ${String(done.json.orderNumber)}` : `-> ${done.status} ${String(done.json.reason ?? done.json.error)}` });
-    return { outcome: "PAID", events, plan, quote, intentId: intent.id, mandateHash: intent.mandateHash, payment, orderNumber: done.status === 200 ? String(done.json.orderNumber) : undefined };
+    if (done.status !== 200 || !done.json.orderNumber) {
+      // The rail settled but the merchant did not confirm an order: report it, never as PAID.
+      return { outcome: "MERCHANT_FAILED", blockedBy: "merchant", reason: String(done.json.reason ?? done.json.error ?? done.status), events, plan, quote, intentId: intent.id, mandateHash: intent.mandateHash, payment };
+    }
+    return { outcome: "PAID", events, plan, quote, intentId: intent.id, mandateHash: intent.mandateHash, payment, orderNumber: String(done.json.orderNumber) };
   }
 
   /** An attacker who captured a valid agent-payer-auth request replays it verbatim to the merchant. */
