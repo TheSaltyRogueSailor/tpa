@@ -97,7 +97,19 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
     return false;
   }
 
-  async function transferOnce(from: string, to: string, amount: bigint) {
+  /** Receipt + matching USDZ Transfer log + finality for an already signed transfer. Shared by transfer and reconcile. */
+  async function settle(txHash: Hex, recipient: Address, amount: bigint, receipt: Awaited<ReturnType<PublicClient["getTransactionReceipt"]>>) {
+    if (receipt.status !== "success") throw new PaymentRefused("metal_tx_reverted", `Metal testnet: transaction ${txHash} reverted.`);
+    const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs });
+    const match = transfers.some(l => l.address.toLowerCase() === USDZ.toLowerCase() && getAddress(l.args.from) === account.address && getAddress(l.args.to) === recipient && l.args.value === amount);
+    if (!match) throw new PaymentRefused("metal_transfer_not_found", `Metal testnet: no matching USDZ Transfer to the merchant in ${txHash} (possible ReceivePolicy quarantine).`);
+    let finalized = false;
+    try { finalized = await waitFinalized(receipt.blockNumber, receipt.blockHash); } catch (e) { fail("metal_finality_check", `${mask(e)} (tx ${txHash})`); }
+    if (!finalized) throw new PaymentRefused("metal_not_final", `Metal testnet: ${txHash} executed but is not final yet; keep pending, do not resend.`);
+    return { txHash, finalized };
+  }
+
+  async function transferOnce(from: string, to: string, amount: bigint, onSigned?: (txHash: string) => Promise<void>) {
     if (getAddress(from) !== account.address) throw new PaymentRefused("payer_mismatch", "Metal testnet: payer address does not match the signing key.");
     if (amount <= 0n) throw new PaymentRefused("invalid_amount", "Metal testnet: amount must be positive.");
     const recipient = getAddress(to);
@@ -112,18 +124,21 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
       signed = await signMip20Contract({ publicClient, walletClient, address: USDZ, abi: erc20Abi, functionName: "transfer", args: [recipient, amount], gasToken: USDZ, gasLimit, gasFallback: gasLimit, maxFeePerGas });
     } catch (e) { if (e instanceof PaymentRefused) throw e; fail("metal_sign_failed", e); }
     const txHash = signed!.txHash; // computed before broadcast; if send/receipt fails, check this hash, never resend blindly
+    if (onSigned) await onSigned(txHash); // the dispatch ledger records the hash durably before broadcast; a throw here aborts the send
     try { await signed!.send(); } catch (e) { fail("metal_broadcast_failed", `${mask(e)} (tx ${txHash})`); }
     let receipt;
     try { receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, timeout: config.receiptTimeoutMs ?? 60_000 }); }
     catch (e) { fail("metal_receipt_pending", `${mask(e)} (tx ${txHash}; do not resend, check this hash)`); }
-    if (receipt!.status !== "success") throw new PaymentRefused("metal_tx_reverted", `Metal testnet: transaction ${txHash} reverted.`);
-    const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt!.logs });
-    const match = transfers.some(l => l.address.toLowerCase() === USDZ.toLowerCase() && getAddress(l.args.from) === account.address && getAddress(l.args.to) === recipient && l.args.value === amount);
-    if (!match) throw new PaymentRefused("metal_transfer_not_found", `Metal testnet: no matching USDZ Transfer to the merchant in ${txHash} (possible ReceivePolicy quarantine).`);
-    let finalized = false;
-    try { finalized = await waitFinalized(receipt!.blockNumber, receipt!.blockHash); } catch (e) { fail("metal_finality_check", `${mask(e)} (tx ${txHash})`); }
-    if (!finalized) throw new PaymentRefused("metal_not_final", `Metal testnet: ${txHash} executed but is not final yet; keep pending, do not resend.`);
-    return { txHash, finalized };
+    return settle(txHash, recipient, amount, receipt!);
+  }
+
+  async function reconcileOnce(txHash: string, from: string, to: string, amount: bigint) {
+    if (getAddress(from) !== account.address) throw new PaymentRefused("payer_mismatch", "Metal testnet: payer address does not match the signing key.");
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return null;
+    let receipt;
+    try { receipt = await publicClient.getTransactionReceipt({ hash: txHash as Hex }); }
+    catch { return null; } // not mined (or not found yet): stay pending, never resend
+    return settle(txHash as Hex, getAddress(to), amount, receipt);
   }
 
   return {
@@ -132,9 +147,14 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
       try { return await publicClient.readContract({ address: USDZ, abi: erc20Abi, functionName: "balanceOf", args: [getAddress(address)] }); }
       catch (e) { return fail("metal_read_failed", e); }
     },
-    transfer({ from, to, amount }) {
+    transfer({ from, to, amount, onSigned }) {
       // The MIP20 transfer has no memo field; the TPA mandate hash stays in the adapter's result detail.
-      const run = queue.then(() => transferOnce(from, to, amount));
+      const run = queue.then(() => transferOnce(from, to, amount, onSigned));
+      queue = run.catch(() => undefined);
+      return run;
+    },
+    reconcile({ txHash, from, to, amount }) {
+      const run = queue.then(() => reconcileOnce(txHash, from, to, amount));
       queue = run.catch(() => undefined);
       return run;
     },

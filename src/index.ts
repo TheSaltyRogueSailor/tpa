@@ -1,6 +1,7 @@
 export * from "./config.js";
 export * from "./domain.js";
 export * from "./evidence.js";
+export * from "./dispatch.js";
 export * from "./dogecoin.js";
 export * from "./host/contracts.js";
 export * from "./host/minimal-owner.js";

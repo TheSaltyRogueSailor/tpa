@@ -1,6 +1,8 @@
 /**
- * Payment rails behind one interface. Every adapter refuses to move money unless it is handed the
- * receipt of a successful TPA consume (the exact-match check against the passkey-approved mandate).
+ * Payment rails behind one interface. The mock Airi and Metal adapters dispatch through a DispatchLedger: one
+ * payment per consumed TPA intent, bound (when the ledger has the TPA evidence reader, as in shopper/flow.ts) to the
+ * amount, currency and merchant of the server-signed mandate and to one checkout id. A bare ConsumeReceipt object is
+ * only a shape check; the binding comes from the ledger reading the consumed intent server side.
  *
  *   Airwallex (Kit 09): MockAiriAdapter now. Kit 09 pays through Airi CLI (allowlisted public beta):
  *     select payment method -> create payment mandate -> fetch one-time card credentials -> checkout
@@ -13,6 +15,9 @@
  *     shopper/metal.ts and is selected only with METAL_LIVE=1 plus METAL_RPC_URL and METAL_PAYER_KEY.
  */
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import type { TpaDispatchRecord, TpaDispatchStore } from "../src/dispatch.js";
 
 export type ConsumeReceipt = { consumed: true; intentId: string; mandateHash: string };
 export type PaymentRequest = {
@@ -32,16 +37,138 @@ function requireReceipt(request: PaymentRequest) {
 }
 const digest = (...parts: string[]) => createHash("sha256").update(parts.join("|")).digest("hex");
 
+/* ------------------------------ dispatch ledger ------------------------------ */
+/**
+ * One payment dispatch per consumed TPA intent. The ledger, not the caller's receipt, decides whether money may move:
+ *   - binding: with `lookupIntent` (the TPA evidence reader), the intent must be stored as "consumed" under the same
+ *     mandate hash (which covers items, shipping, tax and total), and the amount, currency and merchant id the rail is
+ *     asked to pay must equal that server-signed 3.0 mandate. The checkout id, rail, allowlisted payee and rail amount
+ *     are fixed by the first reservation and can never change for that intent.
+ *   - atomic reservation: a durable TpaDispatchStore row (MySQL table tpa_payment_dispatches in a host deployment) is
+ *     inserted before anything is signed; a duplicate insert loses. Concurrent calls in one process share one promise.
+ *   - unknown outcome: the tx id is recorded ("sent") before broadcast. A "sent" row is never re-signed; a retry first
+ *     reconciles by tx id and is refused (dispatch_pending_reconcile) until the rail confirms it.
+ */
+export type DispatchRecord = TpaDispatchRecord;
+export type BoundIntent = { id: string; mandateHash: string; state: string; mandate: { version: string; currency: string; amountBaseUnits: string; merchant?: { id: string } } };
+export type DispatchHooks = { onSigned(txHash: string): Promise<void> };
+export type DispatchTarget = { payee: string; railAmount: string };
+export interface DispatchLedger {
+  run(rail: string, request: PaymentRequest, target: DispatchTarget, execute: (hooks: DispatchHooks) => Promise<PaymentResult>, reconcile?: (record: DispatchRecord) => Promise<PaymentResult | null>): Promise<PaymentResult>;
+  /** The settled dispatch for a checkout and rail reference, if any (what a merchant may trust). */
+  settled(checkoutId: string, reference: string): Promise<DispatchRecord | null>;
+}
+
+/** Process-local store for unit tests and for adapters built without a store. Not durable. */
+export function createMemoryDispatchStore(): TpaDispatchStore {
+  const rows = new Map<string, DispatchRecord>();
+  const copy = (r: DispatchRecord | undefined) => (r ? structuredClone(r) : null);
+  return {
+    async reserve(record) { const existing = rows.get(record.intentId); if (existing) return { created: false, existing: copy(existing)! }; rows.set(record.intentId, structuredClone({ ...record, status: "reserved" })); return { created: true }; },
+    async get(intentId) { return copy(rows.get(intentId)); },
+    async markSent(intentId, txHash, atMs) { const r = rows.get(intentId); if (!r || r.status !== "reserved") return false; Object.assign(r, { status: "sent", txHash, updatedAtMs: atMs }); return true; },
+    async markSucceeded(intentId, result, atMs) { const r = rows.get(intentId); if (!r || r.status === "succeeded") return false; Object.assign(r, { status: "succeeded", result: structuredClone(result), updatedAtMs: atMs }); return true; },
+    async release(intentId) { const r = rows.get(intentId); if (!r || r.status !== "reserved" || r.txHash) return false; rows.delete(intentId); return true; },
+    async findSettled(checkoutId, reference) { for (const r of rows.values()) if (r.status === "succeeded" && r.checkoutId === checkoutId && r.result?.reference === reference) return copy(r); return null; },
+  };
+}
+
+/**
+ * Same contract persisted to a local JSON file (written atomically via rename after every transition). For the
+ * standalone shopper demo, which runs on the in-memory TPA store and has no MySQL; hosts use createTpaDispatchStore.
+ */
+export function createFileDispatchStore(path: string): TpaDispatchStore {
+  const memory = createMemoryDispatchStore();
+  const load = (): DispatchRecord[] => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as DispatchRecord[] : []);
+  const ready = (async () => { for (const r of load()) { const { status, txHash, result, updatedAtMs } = r; await memory.reserve(r); if (txHash) await memory.markSent(r.intentId, txHash, updatedAtMs); if (status === "succeeded" && result) await memory.markSucceeded(r.intentId, result, updatedAtMs); } })();
+  const ids = new Set(load().map(r => r.intentId));
+  const save = async () => {
+    const rows: DispatchRecord[] = [];
+    for (const id of ids) { const r = await memory.get(id); if (r) rows.push(r); }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(`${path}.tmp`, JSON.stringify(rows, null, 2), { mode: 0o600 });
+    renameSync(`${path}.tmp`, path);
+  };
+  const wrap = <A extends unknown[], R>(fn: (...args: A) => Promise<R>, mutates: boolean) => async (...args: A) => { await ready; const out = await fn(...args); if (mutates) await save(); return out; };
+  return {
+    reserve: wrap(async (record: DispatchRecord) => { ids.add(record.intentId); return memory.reserve(record); }, true),
+    get: wrap(memory.get, false),
+    markSent: wrap(memory.markSent, true),
+    markSucceeded: wrap(memory.markSucceeded, true),
+    release: wrap(memory.release, true),
+    findSettled: wrap(memory.findSettled, false),
+  };
+}
+
+export function createDispatchLedger(options: { store?: TpaDispatchStore; lookupIntent?: (intentId: string) => Promise<BoundIntent | null>; now?: () => number } = {}): DispatchLedger {
+  const now = options.now ?? Date.now;
+  const store = options.store ?? createMemoryDispatchStore();
+  const inflight = new Map<string, Promise<PaymentResult>>();
+
+  async function bind(request: PaymentRequest) {
+    if (!options.lookupIntent) return;
+    const intent = await options.lookupIntent(request.receipt.intentId);
+    const m = intent?.mandate;
+    if (!intent || intent.state !== "consumed" || intent.mandateHash !== request.receipt.mandateHash || !m || m.version !== "3.0"
+      || m.amountBaseUnits !== request.amountBaseUnits || m.currency !== request.currency || m.merchant?.id !== request.merchant.id) {
+      throw new PaymentRefused("dispatch_not_bound", "Payment does not match a consumed, server-signed TPA mandate (amount, currency, merchant).");
+    }
+  }
+  const sameDispatch = (r: DispatchRecord, rail: string, request: PaymentRequest, target: DispatchTarget) => r.mandateHash === request.receipt.mandateHash && r.checkoutId === request.checkoutId
+    && r.rail === rail && r.amountBaseUnits === request.amountBaseUnits && r.currency === request.currency && r.merchantId === request.merchant.id && r.payee === target.payee && r.railAmount === target.railAmount;
+
+  async function dispatch(rail: string, request: PaymentRequest, target: DispatchTarget, execute: (hooks: DispatchHooks) => Promise<PaymentResult>, reconcile?: (record: DispatchRecord) => Promise<PaymentResult | null>) {
+    await bind(request);
+    const at = now();
+    const reserved = await store.reserve({ intentId: request.receipt.intentId, mandateHash: request.receipt.mandateHash, checkoutId: request.checkoutId, rail, merchantId: request.merchant.id,
+      currency: request.currency, amountBaseUnits: request.amountBaseUnits, payee: target.payee, railAmount: target.railAmount, status: "reserved", createdAtMs: at, updatedAtMs: at });
+    if (!reserved.created) {
+      const existing = reserved.existing;
+      if (!sameDispatch(existing, rail, request, target)) throw new PaymentRefused("dispatch_conflict", "This TPA intent was already dispatched for a different checkout, rail, payee or amount.");
+      if (existing.status === "succeeded" && existing.result) return existing.result as PaymentResult;
+      if (existing.status === "reserved") throw new PaymentRefused("dispatch_in_progress", "Another worker holds the dispatch reservation for this intent.");
+      const settled = reconcile ? await reconcile(existing) : null;
+      if (!settled) throw new PaymentRefused("dispatch_pending_reconcile", `A transaction for this intent was already signed (${existing.txHash ?? "unknown"}); not resending until it is reconciled.`);
+      await store.markSucceeded(existing.intentId, settled, now());
+      return settled;
+    }
+    let signedTx: string | undefined;
+    try {
+      const result = await execute({ onSigned: async txHash => {
+        if (!(await store.markSent(request.receipt.intentId, txHash, now()))) throw new PaymentRefused("dispatch_conflict", "Dispatch reservation changed before broadcast; not sending.");
+        signedTx = txHash;
+      } });
+      if (!(await store.markSucceeded(request.receipt.intentId, result, now()))) throw new PaymentRefused("dispatch_conflict", "Dispatch record changed while paying.");
+      return result;
+    } catch (error) {
+      // Nothing signed: release so a retry is allowed. Signed: keep "sent" so a retry reconciles instead of resending.
+      if (!signedTx) await store.release(request.receipt.intentId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  return {
+    run(rail, request, target, execute, reconcile) {
+      try { requireReceipt(request); } catch (error) { return Promise.reject(error); }
+      const key = request.receipt.intentId;
+      const running = inflight.get(key);
+      if (running) return running;
+      const p = dispatch(rail, request, target, execute, reconcile).finally(() => inflight.delete(key));
+      inflight.set(key, p);
+      return p;
+    },
+    async settled(checkoutId, reference) { return store.findSettled(checkoutId, reference); },
+  };
+}
+
 /* --------------------------- Airwallex / Airi (Kit 09) --------------------------- */
-export function createMockAiriAdapter(): PaymentAdapter & { attempts: Map<string, PaymentResult> } {
+export function createMockAiriAdapter(ledger: DispatchLedger = createDispatchLedger()): PaymentAdapter & { attempts: Map<string, PaymentResult> } {
   const attempts = new Map<string, PaymentResult>();
   return {
     rail: "airwallex-airi", mode: "mock", attempts,
-    async pay(request) {
-      requireReceipt(request);
-      // Kit 09 rule: before any retry, check the prior attempt. One mandate, one payment.
-      const prior = attempts.get(request.receipt.intentId);
-      if (prior) return prior;
+    pay(request) {
+      // Kit 09 rule: before any retry, check the prior attempt. One mandate, one payment (enforced by the ledger).
+      return ledger.run("airwallex-airi", request, { payee: request.merchant?.id ?? "", railAmount: request.amountBaseUnits }, async () => {
       // TODO(airi): `airi` CLI calls once allowlisted: select payment method, create payment mandate bound
       // to merchant + amount, fetch one-time credentials (kept server side, never in model context), then
       // report the merchant result back. Exact subcommands come from the Airi CLI repo after access.
@@ -52,6 +179,7 @@ export function createMockAiriAdapter(): PaymentAdapter & { attempts: Map<string
       };
       attempts.set(request.receipt.intentId, result);
       return result;
+      });
     },
   };
 }
@@ -98,21 +226,28 @@ export interface MetalClient {
   readonly mode: "mock" | "testnet";
   balanceOf(address: string): Promise<bigint>;
   /** MIP20 transfer of USDZ base units; resolves once the transfer is final. */
-  transfer(input: { from: string; to: string; amount: bigint; memo: string }): Promise<{ txHash: string; finalized: boolean }>;
+  transfer(input: { from: string; to: string; amount: bigint; memo: string; onSigned?: (txHash: string) => Promise<void> }): Promise<{ txHash: string; finalized: boolean }>;
+  /** Look up an already signed transfer by hash; null when it is not (yet) a settled matching transfer. Never resends. */
+  reconcile?(input: { txHash: string; from: string; to: string; amount: bigint }): Promise<{ txHash: string; finalized: boolean } | null>;
 }
 export function createMockMetalClient(balances: Record<string, bigint> = {}): MetalClient & { balances: Map<string, bigint> } {
   const map = new Map(Object.entries(balances).map(([a, b]) => [a.toLowerCase(), b]));
   let nonce = 0;
+  const sent = new Set<string>();
   return {
     chainId: METAL_TESTNET.chainId, mode: "mock", balances: map,
+    async reconcile({ txHash }) { return sent.has(txHash) ? { txHash, finalized: true } : null; },
     async balanceOf(address) { return map.get(address.toLowerCase()) ?? 0n; },
-    async transfer({ from, to, amount, memo }) {
+    async transfer({ from, to, amount, memo, onSigned }) {
       const have = map.get(from.toLowerCase()) ?? 0n;
       if (amount <= 0n || have < amount) throw new PaymentRefused("insufficient_usdz", "Mock Metal: insufficient USDZ balance.");
+      nonce += 1;
+      const txHash = `0x${digest(from, to, amount.toString(), memo, String(nonce))}`;
+      await onSigned?.(txHash);
       map.set(from.toLowerCase(), have - amount);
       map.set(to.toLowerCase(), (map.get(to.toLowerCase()) ?? 0n) + amount);
-      nonce += 1;
-      return { txHash: `0x${digest(from, to, amount.toString(), memo, String(nonce))}`, finalized: true };
+      sent.add(txHash);
+      return { txHash, finalized: true };
     },
   };
 }
@@ -120,22 +255,27 @@ export function createMockMetalClient(balances: Record<string, bigint> = {}): Me
 /** cents -> USDZ base units (18 decimals): 1 cent = 10^16. */
 export const centsToUsdz = (cents: string) => BigInt(cents) * 10n ** 16n;
 
-export function createMetalUsdzAdapter(client: MetalClient, payer: string, merchantAddresses: Record<string, string>): PaymentAdapter {
-  const done = new Map<string, PaymentResult>();
+export function createMetalUsdzAdapter(client: MetalClient, payer: string, merchantAddresses: Record<string, string>, ledger: DispatchLedger = createDispatchLedger()): PaymentAdapter {
+  const toResult = (tx: { txHash: string; finalized: boolean }, amount: bigint, to: string): PaymentResult => ({ rail: "metal-usdz", mode: client.mode, status: "succeeded", reference: tx.txHash,
+    detail: { chainId: String(client.chainId), token: `USDZ ${METAL_TESTNET.usdz}`, amountBaseUnits: amount.toString(), to, finalized: String(tx.finalized) } });
   return {
     rail: "metal-usdz", mode: client.mode,
-    async pay(request) {
-      requireReceipt(request);
-      const prior = done.get(request.receipt.intentId);
-      if (prior) return prior;
-      const to = merchantAddresses[request.merchant.id];
-      if (!to) throw new PaymentRefused("unknown_merchant_address", `No Metal address on file for merchant ${request.merchant.id}.`);
-      const amount = centsToUsdz(request.amountBaseUnits);
-      const tx = await client.transfer({ from: payer, to, amount, memo: request.receipt.mandateHash });
-      const result: PaymentResult = { rail: "metal-usdz", mode: client.mode, status: "succeeded", reference: tx.txHash,
-        detail: { chainId: String(client.chainId), token: `USDZ ${METAL_TESTNET.usdz}`, amountBaseUnits: amount.toString(), to, finalized: String(tx.finalized) } };
-      done.set(request.receipt.intentId, result);
-      return result;
+    pay(request) {
+      const to = merchantAddresses[request.merchant?.id];
+      const amount = () => centsToUsdz(request.amountBaseUnits);
+      const reconcile = client.reconcile ? async (record: DispatchRecord) => {
+        if (!record.txHash || !to) return null;
+        const tx = await client.reconcile!({ txHash: record.txHash, from: payer, to, amount: amount() });
+        return tx ? toResult(tx, amount(), to) : null;
+      } : undefined;
+      if (!to) return Promise.reject(new PaymentRefused("unknown_merchant_address", `No Metal address on file for merchant ${request.merchant?.id}.`));
+      let railAmount: string;
+      try { railAmount = amount().toString(); } catch { return Promise.reject(new PaymentRefused("invalid_amount", "Amount is not an integer number of cents.")); }
+      return ledger.run("metal-usdz", request, { payee: to, railAmount }, async ({ onSigned }) => {
+        if (!to) throw new PaymentRefused("unknown_merchant_address", `No Metal address on file for merchant ${request.merchant.id}.`);
+        const tx = await client.transfer({ from: payer, to, amount: amount(), memo: request.receipt.mandateHash, onSigned });
+        return toResult(tx, amount(), to);
+      }, reconcile);
     },
   };
 }

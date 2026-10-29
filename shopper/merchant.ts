@@ -14,7 +14,13 @@ import { TapError, type TapTag, type TapVerifier } from "./tap.js";
 export type MerchantAttack = null | "price_swap" | "inject_item" | "swap_merchant";
 export type Quote = TpaCheckoutInput & { checkoutId: string };
 
-export async function startDemoMerchant(options: { verifier: TapVerifier; nowSeconds: () => number }) {
+/**
+ * How the merchant confirms money actually arrived for a checkout, from a source it trusts (its PSP / the rail's
+ * settled-dispatch record / the chain), never from the agent's claim. Without one, /complete refuses.
+ */
+export type PaymentVerifier = (input: { checkoutId: string; paymentReference: string; rail: string; quote: Quote }) => boolean | Promise<boolean>;
+
+export async function startDemoMerchant(options: { verifier: TapVerifier; nowSeconds: () => number; verifyPayment?: PaymentVerifier }) {
   const app = express();
   app.use(express.json());
   const quotes = new Map<string, Quote>();
@@ -86,17 +92,25 @@ export async function startDemoMerchant(options: { verifier: TapVerifier; nowSec
     res.json({ checkoutId: quote.checkoutId, paymentRequest: request });
   });
 
-  app.post("/checkout/:id/complete", (req, res) => {
+  app.post("/checkout/:id/complete", async (req, res) => {
     const verified = guard(req, res, "agent-payer-auth");
     if (!verified) return;
     const container = (req.body as { agenticPaymentContainer?: Record<string, unknown> }).agenticPaymentContainer;
     try { options.verifier.verifyContainer(container, verified); }
     catch (error) { res.status(401).json({ error: "tap_rejected", reason: (error as TapError).reason }); return; }
     const id = req.params.id ?? "";
-    if (!quotes.has(id)) { res.status(404).json({ error: "unknown_checkout" }); return; }
+    const quote = quotes.get(id);
+    if (!quote) { res.status(404).json({ error: "unknown_checkout" }); return; }
+    if (container!.checkoutId !== id) { res.status(400).json({ error: "container_checkout_mismatch" }); return; }
     const existing = orders.get(id);
     if (existing) { res.json({ ...existing, duplicate: true }); return; }
-    const order = { orderNumber: `HS-${100000 + orders.size + 1}`, paymentReference: String(container!.paymentReference) };
+    const paymentReference = String(container!.paymentReference ?? "");
+    let paid = false;
+    try { paid = !!options.verifyPayment && await options.verifyPayment({ checkoutId: id, paymentReference, rail: String(container!.rail ?? ""), quote: structuredClone(quote) }); }
+    catch { paid = false; }
+    if (!paid) { res.status(402).json({ error: "payment_unverified", reason: "payment_unverified" }); return; }
+    if (orders.has(id)) { res.json({ ...orders.get(id)!, duplicate: true }); return; }
+    const order = { orderNumber: `HS-${100000 + orders.size + 1}`, paymentReference };
     orders.set(id, order);
     res.json(order);
   });
