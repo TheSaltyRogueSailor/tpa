@@ -66,9 +66,10 @@ describe("gap 2: the file journal is exclusive across store instances and proces
     const first = boundLedger([request()], createFileDispatchStore(path));
     const second = boundLedger([request()], createFileDispatchStore(path));
     let executions = 0;
-    const execute = async () => okay(`mock-result-${++executions}`);
-    await first.run("metal-usdz", request(), target, execute);
-    const again = await second.run("metal-usdz", request(), target, execute);
+    // A card-style rail: a settled metal-usdz row must carry its recorded tx hash, which this execute does not sign.
+    const execute = async () => okay(`mock-result-${++executions}`, "airwallex-airi");
+    await first.run("airwallex-airi", request(), target, execute);
+    const again = await second.run("airwallex-airi", request(), target, execute);
     expect(executions).toBe(1);
     expect(again.reference).toBe("mock-result-1");
   });

@@ -21,7 +21,7 @@ afterAll(async () => { await rig.close(); rmSync(dir, { recursive: true, force: 
 const req = (over: Partial<PaymentRequest> = {}): PaymentRequest => ({ receipt: { consumed: true, intentId: "i1", mandateHash: "a".repeat(64) }, merchant: { id: "m", name: "M" }, currency: "USD", amountBaseUnits: "100", checkoutId: "chk_1", ...over });
 const T = { payee: "0xpayee", railAmount: "100" };
 const ledger0 = (store?: Parameters<typeof boundLedger>[1]) => boundLedger([req()], store);
-const ok = (reference: string): PaymentResult => ({ rail: "r", mode: "mock", status: "succeeded", reference, detail: {} });
+const ok = (reference: string): PaymentResult => ({ rail: "airwallex-airi", mode: "mock", status: "succeeded", reference, detail: {} });
 
 describe("finding 1: a caller-built receipt is not enough to move money", () => {
   it("refuses a well-formed receipt for an intent the TPA store never consumed", async () => {
@@ -46,7 +46,7 @@ describe("finding 2: one dispatch per intent, durable, never re-signed blindly",
   it("concurrent pay() calls for one intent run the transfer once", async () => {
     const ledger = ledger0();
     const execute = vi.fn(async () => { await new Promise(r => setTimeout(r, 10)); return ok("0xabc"); });
-    const [a, b] = await Promise.all([ledger.run("r", req(), T, execute), ledger.run("r", req(), T, execute)]);
+    const [a, b] = await Promise.all([ledger.run("airwallex-airi", req(), T, execute), ledger.run("airwallex-airi", req(), T, execute)]);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(a).toEqual(b);
   });
@@ -54,26 +54,26 @@ describe("finding 2: one dispatch per intent, durable, never re-signed blindly",
   it("a signed-but-unknown transfer survives a restart and is reconciled, not resent", async () => {
     const journalPath = join(dir, "journal.json");
     const first = ledger0(createFileDispatchStore(journalPath));
-    await expect(first.run("r", req(), T, async ({ onSigned }) => { await onSigned("0xdead"); throw new PaymentRefused("metal_receipt_pending", "pending"); })).rejects.toMatchObject({ reason: "metal_receipt_pending" });
+    await expect(first.run("airwallex-airi", req(), T, async ({ onSigned }) => { await onSigned("0xdead"); throw new PaymentRefused("metal_receipt_pending", "pending"); })).rejects.toMatchObject({ reason: "metal_receipt_pending" });
     const restarted = ledger0(createFileDispatchStore(journalPath));
     const execute = vi.fn(async () => ok("0xnew"));
-    await expect(restarted.run("r", req(), T, execute)).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
-    await expect(restarted.run("r", req(), T, execute, async () => null)).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
-    expect(await restarted.run("r", req(), T, execute, async rec => ok(rec.txHash!))).toMatchObject({ reference: "0xdead" });
+    await expect(restarted.run("airwallex-airi", req(), T, execute)).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
+    await expect(restarted.run("airwallex-airi", req(), T, execute, async () => null)).rejects.toMatchObject({ reason: "dispatch_pending_reconcile" });
+    expect(await restarted.run("airwallex-airi", req(), T, execute, async rec => ok(rec.txHash!))).toMatchObject({ reference: "0xdead" });
     expect(execute).not.toHaveBeenCalled();
   });
 
   it("a different payee or rail amount for the same intent is a conflict, never a second payment", async () => {
     const ledger = ledger0();
-    await ledger.run("r", req(), T, async () => ok("0x2"));
-    await expect(ledger.run("r", req(), { ...T, payee: "0xother" }, async () => ok("0x3"))).rejects.toMatchObject({ reason: "dispatch_conflict" });
-    await expect(ledger.run("r", req(), { ...T, railAmount: "101" }, async () => ok("0x3"))).rejects.toMatchObject({ reason: "dispatch_conflict" });
+    await ledger.run("airwallex-airi", req(), T, async () => ok("0x2"));
+    await expect(ledger.run("airwallex-airi", req(), { ...T, payee: "0xother" }, async () => ok("0x3"))).rejects.toMatchObject({ reason: "dispatch_conflict" });
+    await expect(ledger.run("airwallex-airi", req(), { ...T, railAmount: "101" }, async () => ok("0x3"))).rejects.toMatchObject({ reason: "dispatch_conflict" });
   });
 
   it("a failure before signing releases the reservation so a retry may pay", async () => {
     const ledger = ledger0();
-    await expect(ledger.run("r", req(), T, async () => { throw new PaymentRefused("insufficient_usdz", "no funds"); })).rejects.toBeInstanceOf(PaymentRefused);
-    expect(await ledger.run("r", req(), T, async () => ok("0x1"))).toMatchObject({ reference: "0x1" });
+    await expect(ledger.run("airwallex-airi", req(), T, async () => { throw new PaymentRefused("insufficient_usdz", "no funds"); })).rejects.toBeInstanceOf(PaymentRefused);
+    expect(await ledger.run("airwallex-airi", req(), T, async () => ok("0x1"))).toMatchObject({ reference: "0x1" });
   });
 });
 

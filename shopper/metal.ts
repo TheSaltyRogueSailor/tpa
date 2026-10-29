@@ -104,6 +104,10 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
 
   /** Receipt + matching USDZ Transfer log + finality for an already signed transfer. Shared by transfer and reconcile. */
   async function settle(txHash: Hex, recipient: Address, amount: bigint, receipt: Awaited<ReturnType<PublicClient["getTransactionReceipt"]>>) {
+    // Both the first receipt (transfer) and a later reconcile must describe the recorded transaction, not just any receipt the RPC returned.
+    if (typeof receipt?.transactionHash !== "string" || receipt.transactionHash.toLowerCase() !== txHash.toLowerCase()) {
+      throw new PaymentRefused("metal_reference_mismatch", `Metal testnet: receipt does not belong to the recorded transaction ${txHash}; keep pending, do not resend.`);
+    }
     if (receipt.status !== "success") throw new PaymentRefused("metal_tx_reverted", `Metal testnet: transaction ${txHash} reverted.`);
     const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs });
     const match = transfers.some(l => l.address.toLowerCase() === USDZ.toLowerCase() && getAddress(l.args.from) === account.address && getAddress(l.args.to) === recipient && l.args.value === amount);
@@ -146,9 +150,6 @@ export function createMetalTestnetClient(config: MetalLiveConfig): MetalClient &
     let receipt;
     try { receipt = await publicClient.getTransactionReceipt({ hash: txHash as Hex }); }
     catch { return null; } // not mined (or not found yet): stay pending, never resend
-    if (receipt.transactionHash?.toLowerCase() !== txHash.toLowerCase()) {
-      throw new PaymentRefused("metal_reference_mismatch", `Metal testnet: receipt does not belong to the recorded transaction ${txHash}; keep pending, do not resend.`);
-    }
     return settle(txHash as Hex, getAddress(to), amount, receipt);
   }
 

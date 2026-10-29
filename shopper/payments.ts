@@ -15,9 +15,9 @@
  *     shopper/metal.ts and is selected only with METAL_LIVE=1 plus METAL_RPC_URL and METAL_PAYER_KEY.
  */
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TpaDispatchRecord, TpaDispatchStore } from "../src/dispatch.js";
+import { parseDispatchRecord, type TpaDispatchRecord, type TpaDispatchStore } from "../src/dispatch.js";
 
 export type ConsumeReceipt = { consumed: true; intentId: string; mandateHash: string };
 export type PaymentRequest = {
@@ -123,19 +123,37 @@ export function createFileDispatchStore(path: string, options: { lockTimeoutMs?:
   const lockPath = `${path}.lock`;
   const timeoutMs = options.lockTimeoutMs ?? 5_000;
   const unavailable = (why: string) => new PaymentRefused("dispatch_store_unavailable", `Dispatch journal ${why}; refusing to pay until it is resolved.`);
-  const isRecord = (r: unknown): r is DispatchRecord => !!r && typeof r === "object" && typeof (r as DispatchRecord).intentId === "string" && ["reserved", "sent", "succeeded"].includes((r as DispatchRecord).status);
+  /** Every row must pass the closed schema (types, enums, status invariants) and intent ids must be unique. */
+  function validRows(rows: unknown, why: string): DispatchRecord[] {
+    if (!Array.isArray(rows)) throw unavailable(why);
+    const out: DispatchRecord[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      let r: DispatchRecord;
+      try { r = parseDispatchRecord(row); } catch { throw unavailable(why); }
+      if (seen.has(r.intentId)) throw unavailable(why);
+      seen.add(r.intentId);
+      out.push(r);
+    }
+    return out;
+  }
   function load(): DispatchRecord[] {
     if (!existsSync(path)) return [];
     let rows: unknown;
     try { rows = JSON.parse(readFileSync(path, "utf8")); } catch { throw unavailable("is unreadable or malformed"); }
-    if (!Array.isArray(rows) || !rows.every(isRecord)) throw unavailable("is malformed");
-    return rows;
+    return validRows(rows, "is malformed");
   }
   function save(rows: DispatchRecord[]) {
+    const checked = validRows(rows, "write would store an invalid row");
     const tmp = `${path}.${process.pid}.tmp`;
     const fd = openSync(tmp, "w", 0o600);
-    try { writeSync(fd, JSON.stringify(rows, null, 2)); fsyncSync(fd); } finally { closeSync(fd); }
+    try { writeSync(fd, JSON.stringify(checked, null, 2)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(tmp, path);
+    // The rename is only durable once the directory entry is: fsync the parent directory too (power-loss safety).
+    let dirFd: number | undefined;
+    try { dirFd = openSync(dirname(path), fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0)); fsyncSync(dirFd); }
+    catch { throw unavailable("directory could not be synced after the write"); }
+    finally { if (dirFd !== undefined) closeSync(dirFd); }
   }
   async function locked<T>(fn: (rows: DispatchRecord[]) => { out: T; rows?: DispatchRecord[] }): Promise<T> {
     mkdirSync(dirname(path), { recursive: true });
