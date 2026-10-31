@@ -36,7 +36,7 @@ What the new tests cover:
 
 Three timing demonstrations and three SQL lifecycle tests from an independent review of 1461e69 were adapted: the timing demonstrations became refusal and recovery tests, and the SQL tests were adopted as `tests/v31.sql-lifecycle.test.ts`.
 
-These are local results. The Airwallex rail is a mock; no Airwallex sandbox or provider call was made. Metal live runs use alta-testnet only. `usd-usdz-par` is a demo assumption. None of this is bank certification.
+These are local results. The Airwallex rail is a mock by default; the opt-in Airi CLI adapter (`AIRI_LIVE=1`) is tested only against recorded and documented `airi-cli` output, and no Airi mandate, credential, Airwallex sandbox or other provider call was made. Metal live runs use alta-testnet only. `usd-usdz-par` is a demo assumption. None of this is bank certification.
 
 ## Remaining acceptance requirements
 

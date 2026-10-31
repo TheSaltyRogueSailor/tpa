@@ -66,6 +66,7 @@ describe("finding 2: journal rows and stored results use a closed schema", () =>
     expect(parseDispatchRecord(base({ status: "sent", txHash: TX }))).toMatchObject({ txHash: TX });
     expect(parseDispatchRecord(base({ status: "succeeded", txHash: TX, result: result() }))).toMatchObject({ status: "succeeded" });
     expect(parseDispatchRecord(base({ rail: "airwallex-airi", payee: "harbor-supply", railAmount: "1249", status: "succeeded", result: result({ rail: "airwallex-airi", mode: "mock", reference: "awx_mock_1" }) }))).toMatchObject({ rail: "airwallex-airi" });
+    expect(parseDispatchRecord(base({ rail: "airwallex-airi", payee: "harbor-supply", railAmount: "1249", status: "succeeded", txHash: "mdt_test_1", result: result({ rail: "airwallex-airi", mode: "live", reference: "mdt_test_1" }) }))).toMatchObject({ result: { mode: "live" } });
   });
 
   it.each([

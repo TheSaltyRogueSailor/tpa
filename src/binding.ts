@@ -71,12 +71,15 @@ export const TPA_TARGET_RAILS = ["metal-usdz", "airwallex-airi"] as const;
 export const METAL_USDZ_ASSET = "erc20:0x000000000000000000000000000000000000b5d5" as const;
 
 /**
- * Per-rail constants. Airwallex: the real Airi/Airwallex destination contract is not documented yet, so the only
- * Airwallex target is an explicit MOCK fixture; anything else is refused (destination_unknown).
+ * Per-rail constants. Airwallex has two signed target kinds, and the network and payee tag must agree:
+ *   - "airwallex:mock-fixture" + "awx-mock-fixture:<id>": the offline MOCK (default; no provider call).
+ *   - "airwallex:airi-card" + "awx-airi-merchant:<merchant id>": a real Airi CLI checkout (Kit 09). Airi pays the
+ *     merchant with a one-time card the owner approves in Airi, so the payee is the signed merchant itself (the
+ *     merchant URL and country come from the server's merchant directory, never from the agent).
  */
 const RAIL_RULES = {
   "metal-usdz": { networks: /^evm:63825$/, asset: METAL_USDZ_ASSET, decimals: 18, payee: /^evm:0x[0-9a-f]{40}$/, feeAsset: METAL_USDZ_ASSET },
-  "airwallex-airi": { networks: /^airwallex:mock-fixture$/, asset: "iso4217:USD", decimals: 2, payee: /^awx-mock-fixture:[a-z0-9_-]{1,64}$/, feeAsset: "iso4217:USD" },
+  "airwallex-airi": { networks: /^airwallex:(mock-fixture|airi-card)$/, asset: "iso4217:USD", decimals: 2, payee: /^(awx-mock-fixture:[a-z0-9_-]{1,64}|awx-airi-merchant:[A-Za-z0-9][A-Za-z0-9._:-]{0,63})$/, feeAsset: "iso4217:USD" },
 } as const;
 
 export const tpaPaymentTargetSchema = z.object({
@@ -86,7 +89,7 @@ export const tpaPaymentTargetSchema = z.object({
   decimals: z.number().int().min(0).max(36),
   /** The checkout recipient the target was resolved for (the mandate recipient). */
   recipientRef: z.string().min(1).max(64),
-  /** Tagged, rail-specific actual payee: "evm:0x<40 lowercase hex>" or "awx-mock-fixture:<id>". */
+  /** Tagged, rail-specific actual payee: "evm:0x<40 lowercase hex>", "awx-mock-fixture:<id>" or "awx-airi-merchant:<merchant id>". */
   payee: z.string().max(140),
   sourceCurrency: z.literal("USD"),
   sourceAmountBaseUnits: z.string().regex(positive),
@@ -110,6 +113,7 @@ export const tpaPaymentTargetSchema = z.object({
   if (!rule.payee.test(t.payee)) bad("payee");
   if (t.fee.asset !== rule.feeAsset) bad("fee");
   if (t.rail === "airwallex-airi" && t.fee.capBaseUnits !== "0") bad("fee");
+  if (t.rail === "airwallex-airi" && (t.network === "airwallex:airi-card") !== t.payee.startsWith("awx-airi-merchant:")) bad("payee");
   const num = BigInt(t.conversion.rateNumerator), den = BigInt(t.conversion.rateDenominator);
   const scaled = BigInt(t.sourceAmountBaseUnits) * num;
   if (scaled % den !== 0n || (scaled / den).toString() !== t.railAmount) bad("railAmount");
@@ -130,7 +134,7 @@ export function paymentTargetHash(value: unknown): string {
   return sha256(`${TPA_PAYMENT_TARGET_DOMAIN}\n${JSON.stringify(paymentTargetTuple(value))}`);
 }
 
-/** Untagged payee as the rail uses it (Metal: 0x address; Airwallex mock: the fixture tag itself). */
+/** Untagged payee as the rail uses it (Metal: 0x address; Airwallex: the tagged fixture / merchant itself). */
 export function railPayee(target: TpaPaymentTarget): string {
   return target.rail === "metal-usdz" ? target.payee.slice("evm:".length) : target.payee;
 }

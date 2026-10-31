@@ -83,7 +83,9 @@ export function tpaApprovalSummary(mandate: TpaBoundCheckoutMandate): TpaApprova
     expiryMeaning: "The trusted server will not sign or submit a payment after this time. It is not a chain-enforced deadline; a payment submitted before it may settle later.",
     limits: [
       "Network fee: the cap is enforced before signing; the actual gas charged is not separately recorded in the result.",
-      ...(t.rail === "airwallex-airi" ? ["Airwallex: mock fixture destination only; no provider call is made."] : []),
+      ...(t.rail === "airwallex-airi" && t.network === "airwallex:airi-card"
+        ? ["Airwallex Airi: pays the signed merchant with a one-time card; the Airi account owner must also approve this exact payment in Airi (passkey)."]
+        : t.rail === "airwallex-airi" ? ["Airwallex: mock fixture destination only; no provider call is made."] : []),
     ],
   };
 }

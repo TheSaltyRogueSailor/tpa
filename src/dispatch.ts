@@ -59,7 +59,8 @@ export const isBoundDispatchRecord = (record: TpaDispatchRecord): record is TpaB
  * Unknown keys, wrong types, unknown enums and impossible status combinations all fail. Throws TpaDispatchRecordError.
  */
 export const TPA_DISPATCH_RAILS = ["airwallex-airi", "airwallex-sandbox", "metal-usdz"] as const;
-export const TPA_DISPATCH_MODES = ["mock", "sandbox", "testnet"] as const;
+/** "live": a real provider call (Airi CLI); it still needs the owner's approval in Airi for every payment. */
+export const TPA_DISPATCH_MODES = ["mock", "sandbox", "testnet", "live"] as const;
 export class TpaDispatchRecordError extends Error { constructor(readonly field: string) { super(`invalid dispatch record (${field})`); this.name = "TpaDispatchRecordError"; } }
 const RECORD_KEYS = new Set(["intentId", "mandateHash", "checkoutId", "rail", "merchantId", "currency", "amountBaseUnits", "payee", "railAmount", "status", "txHash", "result", "createdAtMs", "updatedAtMs", "checkoutFingerprint", "paymentTargetHash", "snapshot"]);
 const RESULT_KEYS = new Set(["rail", "mode", "status", "reference", "detail"]);
@@ -86,6 +87,8 @@ export function parseDispatchResult(value: unknown, rail?: string): TpaDispatchR
     status: oneOf(r.status, ["succeeded"] as const, "result.status"), reference: str(r.reference, TOKEN, "result.reference"), detail: out,
   };
   if (rail !== undefined && parsed.rail !== rail) throw new TpaDispatchRecordError("result.rail");
+  // "live" is only produced by the Airi CLI rail; any other rail claiming it is refused.
+  if (parsed.mode === "live" && parsed.rail !== "airwallex-airi") throw new TpaDispatchRecordError("result.mode");
   return parsed;
 }
 

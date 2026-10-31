@@ -12,6 +12,7 @@
     "scripts/redteam-demo.ts",
     "scripts/demo/**/*.ts",
     "scripts/shopper-demo.ts",
+    "scripts/airi-preflight.ts",
     "shopper/**/*.ts"
   ],
   "exclude": [

@@ -161,7 +161,7 @@ Dispatch. Every payment goes through one dispatch row per consumed intent (`shop
 
 If the gate fails before signing, nothing is signed and the reservation is released. If it fails after the transaction id is recorded, that transaction is never sent and the row stays read-only: it is never re-signed and never resent, and a retry only reconciles. A row whose outcome is unknown is handled the same way. The live Metal client refuses (`metal_unguarded`) to sign without both hooks.
 
-Limits of the mocks. The mock Metal client checks the fee cap and the payer balance but does not debit gas or record the gas actually used. The Airwallex rail is a mock (`createMockAiriAdapter`, a fixture destination, no provider call). The Airwallex sandbox adapter exists but is disabled and has never been run. The synthetic owner user 1 exists only in the demo rig; a host supplies its own owner identity.
+Limits of the mocks. The mock Metal client checks the fee cap and the payer balance but does not debit gas or record the gas actually used. The Airwallex rail is a mock by default (`createMockAiriAdapter`, a fixture destination, no provider call); the real Airi CLI adapter (`createAiriCliAdapter`) is opt-in with `AIRI_LIVE=1` and has only been tested against recorded CLI output (see "Live Airi mode"). The Airwallex sandbox adapter exists but is disabled and has never been run. The synthetic owner user 1 exists only in the demo rig; a host supplies its own owner identity.
 
 ## Running the tests
 
@@ -172,14 +172,14 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-Without a database, 204 tests run across 22 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
+Without a database, 223 tests run across 23 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
 
 ```sh
 TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' \
 TPA_DISPATCH_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_dispatch_test' pnpm test
 ```
 
-The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **308 library tests across 22 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-10-29).
+The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **308 library tests across 22 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-10-29, at c467042; the 19 offline Airi CLI tests added since need no database and were not part of that run).
 
 Ledger tests (local in-memory EVM, no database):
 
@@ -189,7 +189,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 204 offline library tests and the 20 ledger tests.
+The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 223 offline library tests and the 20 ledger tests.
 
 ## Red-team demo (local, in memory)
 
@@ -234,7 +234,7 @@ TPA is being built for the [Airwallex Agentic Banking Hackathon](https://airwall
 
 ## TPA Shopper (Kit 09: Approval-Bound Shopping Agent)
 
-TPA Shopper is an AI shopping agent that can only spend what its owner approved, exactly once, at exactly the merchant, items, shipping, tax and total the owner saw. It follows [Kit 09 in the Airwallex builder guide](https://airwallexdev.com/guide): the shopper gives a need and a budget, the agent builds a cart, asks for approval of the exact terms, and asks again (here: refuses) when anything drifts. Kit 09 has no public starter repo; it runs on Airi CLI, which is allowlisted, so the Airi steps are mocked behind an adapter until access is granted.
+TPA Shopper is an AI shopping agent that can only spend what its owner approved, exactly once, at exactly the merchant, items, shipping, tax and total the owner saw. It follows [Kit 09 in the Airwallex builder guide](https://airwallexdev.com/guide): the shopper gives a need and a budget, the agent builds a cart, asks for approval of the exact terms, and asks again (here: refuses) when anything drifts. Kit 09 has no public starter repo; it runs on Airi CLI (`@airwallex/airi-cli`). The demo uses a mock Airi adapter by default; the real Airi CLI adapter is opt-in (see "Live Airi mode").
 
 ### Run the demo
 
@@ -278,7 +278,7 @@ shopper intent + budget
   -> merchant order number           (TAP signed)
 ```
 
-Files: `shopper/tap.ts` (TAP signer and merchant verifier), `shopper/merchant.ts` (demo merchant with attack modes), `shopper/agent.ts` (planner), `shopper/payments.ts` (rails), `shopper/flow.ts` (orchestration), `scripts/shopper-demo.ts` (CLI).
+Files: `shopper/tap.ts` (TAP signer and merchant verifier), `shopper/merchant.ts` (demo merchant with attack modes), `shopper/agent.ts` (planner), `shopper/payments.ts` (rails), `shopper/airi.ts` (Airi CLI wrapper), `shopper/flow.ts` (orchestration), `scripts/shopper-demo.ts` (CLI).
 
 ### Visa Trusted Agent Protocol details
 
@@ -304,13 +304,31 @@ Implemented from the [Visa TAP merchant specification](https://developer.visa.co
 
 | Piece | Today | To make it real |
 | --- | --- | --- |
-| Airwallex Kit 09 payment (Airi CLI) | `createMockAiriAdapter`: simulates payment mandate, one-time credentials and result report; idempotent per TPA intent | Airi account at app.airi.com, then email devhelp@airwallex.com for allowlisted Airi CLI access. Replace the TODO in `shopper/payments.ts` with the Airi CLI calls (select method, create payment mandate, fetch one-time credentials, report result). Kit 09 places real orders with an Airwallex-issued card, so this needs Raul's go-ahead. |
+| Airwallex Kit 09 payment (Airi CLI) | Default: `createMockAiriAdapter` (simulated mandate, one-time credential and result report; idempotent per TPA intent). Opt-in: `createAiriCliAdapter` over `shopper/airi.ts` with `AIRI_LIVE=1`, tested only against recorded / documented CLI output | See "Live Airi mode" below. A first real run needs an agent-enabled card in Airi, a real merchant checkout to submit the one-time card to, and Raul's approval in Airi for that exact payment. |
 | Airwallex sandbox REST | `createAirwallexSandboxAdapter` written (login, `pa/payment_intents/create`, `confirm`) but disabled and never run | Sandbox account at sandbox.airwallex.com, set `AWX_CLIENT_ID`, `AWX_API_KEY` and `AWX_TEST_CARD_NUMBER` (the sandbox test card from the guide). Verify field names with the Airwallex docs MCP before relying on it. |
 | Metal USDZ | Default: `createMockMetalClient` (in-memory USDZ, 18 decimals, chain 63825, token `0x000000000000000000000000000000000000b5d5`, instant finality). Live: `createMetalTestnetClient` in `shopper/metal.ts` | Implemented; see "Live Metal mode" below. Fund the payer from the Metal faucet, then run with `METAL_LIVE=1`. |
 | Visa key directory | Local map of trusted agent keys | Visa Intelligent Commerce onboarding and the Visa-hosted well-known key URL. |
 | Merchant | Local demo merchant with a synthetic catalog | Kit 09 targets real merchant sites through browser automation; the TAP and TPA checks stay the same. |
 | Passkey | Synthetic authenticator with real P-256 keys and real WebAuthn verification. The demo owner (user 1) is synthetic and exists only in the demo rig. | Use `client-reference/tpa-client.ts` in a browser with a real platform authenticator. |
 | TPA store | Demo in-memory port (`scripts/demo/memory-store.ts`) | The MySQL store in `src/store.ts`. |
+
+### Live Airi mode (Airwallex Kit 09, opt-in)
+
+The Airwallex rail is mocked unless you opt in. Nothing falls back silently: with `AIRI_LIVE=1` the rig refuses to start (`airi_misconfigured`) unless it is given a live config, and without the flag no `airi-cli` command runs at all. Tests always use recorded CLI output (`tests/airi.cli.test.ts`, `tests/fixtures/airi/`); no test creates a mandate or fetches a credential.
+
+Flow (`shopper/payments.ts` `createAiriCliAdapter`, CLI wrapper in `shopper/airi.ts`, per `airi-cli` 0.1.0-beta.3 `--help` and its bundled `airi-get-credential` skill), after all TPA checks and the TPA consume:
+
+1. Preflight, nothing recorded: the signed target must be `airwallex:airi-card` paying `awx-airi-merchant:<the signed merchant id>`, the merchant must be in the server-side Airi merchant directory (https URL + country), `airi-cli auth whoami` must report signed in, and `AIRI_PAYMENT_METHOD_ID` must still be listed by `airi-cli payment-methods list`.
+2. Fresh TPA gate, then `airi-cli mandate create --source --payment-method-id --merchant-name --merchant-url --merchant-country --total-amount --currency --item ... --description` for exactly the signed merchant, items (plus shipping and tax lines) and total. This pushes a passkey approval to the Airi account owner; `onApprovalRequested` gets the `passkey_url` and order summary to show them.
+3. The mandate id is recorded in the dispatch ledger before anything else (the "sent" marker). From then on a retry only reconciles (`airi-cli mandate list --status COMPLETED`); it never creates a second mandate or fetches the credential again. If the TPA gate fails here the mandate is cancelled (`mandate cancel`, status `DENIED`).
+4. `airi-cli mandate get-credential --mandate-id <id> --file <fresh 0700 dir>/credential.json` blocks until the owner approves (default 300 s; a timeout cancels the mandate). The credential stays in that 0600 file: the adapter never reads it, the injected `submitCheckout` receives only the path, and the directory is deleted as soon as checkout returns or throws.
+5. `airi-cli mandate result --result SUCCEEDED|CANCELLED|DECLINED` is always reported. Only `SUCCEEDED` settles the dispatch (`mode: "live"`, reference = mandate id, card shown as brand + last 4 only). If the checkout step crashes the outcome is unknown: nothing is reported or retried, the row stays read-only for manual reconcile.
+
+Configuration: `AIRI_LIVE=1`, `AIRI_PAYMENT_METHOD_ID` (from `pnpm airi:preflight`), optional `AIRI_SOURCE` (default `TPA Shopper`, must match the `--client-name` used at login) and `AIRI_CLI_BIN`; plus `createShopperRig({ airi: { merchants: { <merchantId>: { url, country } }, submitCheckout, onApprovalRequested } })`. The local demo merchant cannot take a card, so a live run needs a real merchant checkout and a `submitCheckout` that fills its card form from the file. Live runs persist the dispatch journal to `artifacts/airi-dispatch-journal.json` (gitignored).
+
+Sign-in is a human step: `airi-cli auth login --client-name "TPA Shopper"` prints a verification URL and code; the owner approves it while `airi-cli auth poll` runs. The app never runs `auth login` or `auth logout` and never reads the CLI's session file. `pnpm airi:preflight` is read-only: it prints the session expiry and each payment method as id + brand + last 4.
+
+Known gaps: payment method and mandate-list field spellings beyond those in the CLI docs (`paymentMethodId`, `mandate_id`, `passkey_url`, `mandateId`, `status`) are parsed tolerantly and must be checked against the first real responses; a crash between `mandate create` and recording its id leaves an unapproved mandate in Airi (no money moves; the owner can deny it).
 
 ### Live Metal mode (alta-testnet)
 

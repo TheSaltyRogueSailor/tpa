@@ -87,7 +87,7 @@ async function main() {
     say(cyan("== Summary =="));
     for (const r of results) say(`  ${r.pass ? green("PASS") : red("FAIL")}  ${r.outcome === "PAID" ? green("PAID   ") : red("BLOCKED")}  ${r.name}  ${dim(r.reason)}`);
     say();
-    say(yellow("  Mocked pending credentials: Airwallex Airi CLI (Kit 09 allowlist), Metal is mock unless METAL_LIVE=1 (see README)."));
+    say(yellow("  Mocked by default: Airwallex Airi (real airi-cli adapter is opt-in with AIRI_LIVE=1), Metal is mock unless METAL_LIVE=1 (see README)."));
     say(dim("  Real: TPA mandate 3.1 (checkout fingerprint + payment target bound) + Ed25519 signature, WebAuthn ES256 verification, exact-match consume, audit log, Visa TAP RFC 9421 signing/verification."));
     if (results.some(r => !r.pass)) process.exitCode = 1;
   } finally {

@@ -1,0 +1,1 @@
+[{"paymentMethodId":"pm_test_0001","brand":"VISA","last4":"0005","expiryMonth":"12","expiryYear":"2030","nickname":"Test card"},{"paymentMethodId":"pm_test_0002","brand":"MASTERCARD","last4":"0013","nickname":"Backup"}]

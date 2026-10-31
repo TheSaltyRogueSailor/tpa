@@ -4,10 +4,13 @@
  * target, all inside the signed tuple). The payee, rail amount, network, asset, conversion and fee cap come ONLY from
  * the signed mandate's paymentTarget; callers cannot supply them. A bare ConsumeReceipt object is only a shape check.
  *
- *   Airwallex (Kit 09): MockAiriAdapter now. Kit 09 pays through Airi CLI (allowlisted public beta):
- *     select payment method -> create payment mandate -> fetch one-time card credentials -> checkout
- *     -> report result. We have no Airi access yet, so the mock reproduces that sequence and its
- *     idempotency rule ("check the prior attempt before any retry").
+ *   Airwallex (Kit 09), two adapters on the "airwallex-airi" rail:
+ *     - createMockAiriAdapter (DEFAULT): offline mock of the Airi sequence and its idempotency rule ("check the prior
+ *       attempt before any retry"); signed target "airwallex:mock-fixture". No provider call.
+ *     - createAiriCliAdapter (opt-in, AIRI_LIVE=1, see shopper/flow.ts): real `airi-cli` calls (shopper/airi.ts):
+ *       whoami -> payment-methods list -> mandate create (the Airi account owner approves with a passkey in Airi)
+ *       -> mandate get-credential --file (one-time card, 0600 file, never in memory or logs) -> merchant checkout
+ *       (injected submitter) -> mandate result. Signed target "airwallex:airi-card" paying the signed merchant.
  *   Airwallex sandbox REST: DISABLED under v3.1. The rail-specific Airwallex destination (beneficiary vs merchant
  *     account) is not documented yet, so the adapter refuses (destination_unverified) before any network call.
  *   Metal (USDZ on Metal alta-testnet): MetalUsdzAdapter over a MetalClient. MockMetalClient by default; the
@@ -17,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { AiriCliError, centsToMajor, createAiriCredentialFile, maskPaymentMethod, type AiriClient, type AiriMandateItem, type AiriTransactionResult } from "./airi.js";
 import { isBoundDispatchRecord, parseDispatchRecord, type TpaBoundDispatchRecord, type TpaDispatchRecord, type TpaDispatchStore } from "../src/dispatch.js";
 import {
   canonicalTpaMandate, compareCheckoutToMandate, boundFingerprintInput, normalizeTpaCheckout, tpaBoundCheckoutMandateSchema,
@@ -30,7 +34,7 @@ export type ConsumeReceipt = { consumed: true; intentId: string; mandateHash: st
  * checkout being paid. Nothing about where the money goes or how much the rail moves: that is the signed target.
  */
 export type PaymentRequest = { receipt: ConsumeReceipt; checkoutId: string; checkout: TpaCheckoutInput };
-export type PaymentResult = { rail: string; mode: "mock" | "sandbox" | "testnet"; status: "succeeded"; reference: string; detail: Record<string, string> };
+export type PaymentResult = { rail: string; mode: "mock" | "sandbox" | "testnet" | "live"; status: "succeeded"; reference: string; detail: Record<string, string> };
 export interface PaymentAdapter { readonly rail: string; readonly mode: PaymentResult["mode"]; pay(request: PaymentRequest): Promise<PaymentResult> }
 
 export class PaymentRefused extends Error { constructor(readonly reason: string, message: string) { super(message); this.name = "PaymentRefused"; } }
@@ -466,7 +470,7 @@ export function createMockAiriAdapter(ledger: DispatchLedger): PaymentAdapter & 
         if (signed.network !== "airwallex:mock-fixture" || !signed.payee.startsWith("awx-mock-fixture:") || signed.fee.capBaseUnits !== "0") {
           throw new PaymentRefused("destination_unverified", "Airwallex: only the documented mock fixture destination is supported.");
         }
-        // TODO(airi): `airi` CLI calls once allowlisted and the destination contract is documented.
+        // Real Airi CLI calls live in createAiriCliAdapter (opt-in); this mock never calls a provider.
         await beforeSign(); // fresh gate before the provider attempt is created
         const reference = `awx_mock_${digest(r.receipt.intentId, r.checkoutId).slice(0, 20)}`;
         await onSigned(reference); // durable provider marker, then the final fresh gate, then the "provider call" at once
@@ -477,6 +481,185 @@ export function createMockAiriAdapter(ledger: DispatchLedger): PaymentAdapter & 
         };
         attempts.set(r.receipt.intentId, result);
         return result;
+      }, reconcile);
+    },
+  };
+}
+
+/**
+ * Server-side directory for real Airi checkouts: merchant id -> the merchant's checkout URL (https) and ISO country.
+ * Frozen at construction; the agent never supplies these. Only merchants listed here can get an Airi target.
+ */
+export type AiriMerchantDirectory = Readonly<Record<string, Readonly<{ url: string; country: string }>>>;
+function freezeDirectory(directory: Record<string, { url: string; country: string }>): AiriMerchantDirectory {
+  const out: Record<string, { url: string; country: string }> = {};
+  for (const [id, m] of Object.entries(directory)) {
+    if (!/^https:\/\/[^\s]+$/.test(m?.url ?? "") || !/^[A-Z]{2}$/.test(m?.country ?? "")) throw new PaymentRefused("airi_misconfigured", `Airi merchant ${id}: url must be https and country a 2-letter code.`);
+    out[id] = Object.freeze({ url: m.url, country: m.country });
+  }
+  return Object.freeze(out);
+}
+
+/** What the checkout step reports back. Only SUCCEEDED settles the dispatch; it is always reported to Airi. */
+export type AiriCheckoutOutcome = { result: AiriTransactionResult; reason?: string };
+/**
+ * Fills the merchant's card form with the one-time credential and submits it. It receives only the PATH of the 0600
+ * credential file (written by airi-cli); it must read the values at the moment it fills the form and never log,
+ * return or persist them. The adapter deletes the file as soon as this resolves or throws.
+ */
+export type AiriCheckoutSubmitter = (input: {
+  credentialFile: string; mandateId: string; merchant: Readonly<{ id: string; name: string; url: string; country: string }>;
+  amount: string; currency: "USD"; request: FrozenPaymentRequest;
+}) => Promise<AiriCheckoutOutcome>;
+export type AiriApprovalNotice = { mandateId: string; passkeyUrl?: string; merchant: string; amount: string; currency: "USD"; items: readonly AiriMandateItem[]; card: string };
+export type AiriCliAdapterOptions = {
+  client: AiriClient;
+  /** The Airi payment method to use (from `airi-cli payment-methods list`); it must still be listed at pay time. */
+  paymentMethodId: string;
+  /** Agent name passed as --source; must match the client name used at `airi-cli auth login`. */
+  source: string;
+  merchants: Record<string, { url: string; country: string }>;
+  submitCheckout: AiriCheckoutSubmitter;
+  /** Show the passkey URL and order summary to the Airi account owner (the skill requires it before polling). */
+  onApprovalRequested?: (notice: AiriApprovalNotice) => void | Promise<void>;
+  /** Display name for a SKU on the Airi approval screen (default: the SKU). */
+  itemName?: (sku: string) => string | undefined;
+  approvalTimeoutSeconds?: number;
+  credentialDir?: string;
+};
+
+/** Signed Airi target for a merchant in the directory: the payee IS the signed merchant, no conversion, no fee. */
+export function createAiriMerchantResolver(directory: Record<string, { url: string; country: string }>) {
+  const book = freezeDirectory(directory);
+  return (input: TargetResolverInput): TpaPaymentTarget | null => {
+    if (input.rail !== "airwallex-airi" || input.currency !== "USD") return null;
+    if (!Object.prototype.hasOwnProperty.call(book, input.merchant.id) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(input.merchant.id)) return null;
+    return {
+      rail: "airwallex-airi", network: "airwallex:airi-card", asset: "iso4217:USD", decimals: 2, recipientRef: input.recipientRef, payee: `awx-airi-merchant:${input.merchant.id}`,
+      sourceCurrency: "USD", sourceAmountBaseUnits: input.sourceAmountBaseUnits, railAmount: input.sourceAmountBaseUnits,
+      conversion: { id: "usd-usd-identity", rateNumerator: "1", rateDenominator: "1", expires: input.nowSeconds + CONVERSION_LOCK_SECONDS },
+      fee: { asset: "iso4217:USD", capBaseUnits: "0" },
+    };
+  };
+}
+
+/** Airi line items for the signed checkout: products, then shipping and tax as their own lines, summing to the total. */
+export function airiItemsFor(request: FrozenPaymentRequest, itemName: (sku: string) => string | undefined = () => undefined): AiriMandateItem[] {
+  const n = request.normalized;
+  const clean = (v: string) => v.replace(/[,:\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || "Item";
+  const items: AiriMandateItem[] = n.items.map(i => ({ name: clean(itemName(i.sku) ?? i.sku), unitPrice: centsToMajor(i.unitPriceBaseUnits), quantity: i.qty }));
+  if (BigInt(n.shipping.costBaseUnits) > 0n) items.push({ name: clean(`Shipping ${n.shipping.method}`), unitPrice: centsToMajor(n.shipping.costBaseUnits), quantity: 1 });
+  if (BigInt(n.taxBaseUnits) > 0n) items.push({ name: "Tax", unitPrice: centsToMajor(n.taxBaseUnits), quantity: 1 });
+  return items;
+}
+
+/**
+ * REAL Airwallex Airi rail (Kit 09) over `airi-cli`. Opt-in only; needs a durable dispatch ledger. One TPA intent
+ * produces at most one Airi mandate, and a mandate's credential is fetched at most once:
+ *   1. preflight (nothing recorded): signed target is "airwallex:airi-card" for this exact merchant, the merchant is
+ *      in the directory, `auth whoami` is signed in, and the configured payment method is still listed.
+ *   2. beforeSign (fresh TPA gate) -> `mandate create` for the signed merchant, items and total. This pushes a
+ *      passkey approval to the Airi account owner; no money can move without it.
+ *   3. onSigned(mandateId): the mandate id is recorded ("sent") before anything else; from now on a retry only
+ *      reconciles (mandate list), it never creates a second mandate or fetches the credential again. If the TPA gate
+ *      fails here, the mandate is cancelled (DENIED).
+ *   4. `mandate get-credential --file` into a fresh 0700 dir (blocks until the owner approves); a timeout cancels the
+ *      mandate. The submitter checks out with the file; the file is deleted right after.
+ *   5. `mandate result` is always reported. Only SUCCEEDED settles; CANCELLED / DECLINED refuse (row stays "sent").
+ */
+export function createAiriCliAdapter(ledger: DispatchLedger, options: AiriCliAdapterOptions): PaymentAdapter {
+  const rail = "airwallex-airi";
+  const directory = freezeDirectory(options.merchants);
+  const { client } = options;
+  if (!client || typeof options.submitCheckout !== "function") throw new PaymentRefused("airi_misconfigured", "Airi live mode needs an Airi client and a checkout submitter.");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(options.paymentMethodId ?? "")) throw new PaymentRefused("airi_misconfigured", "Airi live mode needs AIRI_PAYMENT_METHOD_ID (from `airi-cli payment-methods list`).");
+  if (!options.source) throw new PaymentRefused("airi_misconfigured", "Airi live mode needs an agent source name.");
+  const refuse = (error: unknown): never => {
+    if (error instanceof PaymentRefused) throw error;
+    if (error instanceof AiriCliError) throw new PaymentRefused(error.reason, error.message);
+    throw new PaymentRefused("airi_cli_failed", "Airi CLI call failed.");
+  };
+  const cancelQuietly = (mandateId: string) => client.cancelMandate(mandateId).catch(() => undefined);
+  /** Read-only: a recorded mandate settles only if Airi lists it COMPLETED for the recorded amount. Never fetches a credential. */
+  const reconcile: LedgerReconcile = async record => {
+    if (!record.txHash) return null;
+    for (let page = 0; page < 5; page += 1) {
+      const { items, hasMore } = await client.listMandates({ status: ["COMPLETED"], size: 100, page });
+      const found = items.find(m => m.mandateId === record.txHash);
+      if (found) {
+        if (found.totalAmount !== undefined && Number(found.totalAmount).toFixed(2) !== centsToMajor(record.railAmount)) return null;
+        return { rail, mode: "live", status: "succeeded", reference: record.txHash,
+          detail: { paymentMandateId: record.txHash, to: record.payee, amountBaseUnits: record.railAmount, currency: "USD", fee: "0", reconciled: "true" } };
+      }
+      if (!hasMore) break;
+    }
+    return null;
+  };
+  return {
+    rail, mode: "live",
+    pay(request) {
+      let bound: DispatchLedger;
+      try { bound = requireBoundLedger(ledger, true, rail); } catch (error) { return Promise.reject(error); }
+      return bound.run(rail, request, async ({ request: r, target, beforeSign, onSigned }) => {
+        const signed = target.signed;
+        const merchant = Object.prototype.hasOwnProperty.call(directory, r.merchant.id) ? directory[r.merchant.id] : undefined;
+        if (signed.network !== "airwallex:airi-card" || signed.payee !== `awx-airi-merchant:${r.merchant.id}` || signed.fee.capBaseUnits !== "0"
+          || signed.asset !== "iso4217:USD" || target.railAmount !== r.amountBaseUnits || !merchant) {
+          throw new PaymentRefused("destination_unverified", "Airi: the signed target is not an Airi card checkout for this merchant (or the merchant is not in the Airi directory).");
+        }
+        const items = airiItemsFor(r, options.itemName);
+        const sum = items.reduce((t, i) => t + BigInt(i.unitPrice.replace(".", "")) * BigInt(i.quantity), 0n);
+        if (sum.toString() !== target.railAmount) throw new PaymentRefused("airi_items_mismatch", "Airi line items do not add up to the signed total.");
+        const amount = centsToMajor(target.railAmount);
+
+        // 1. Preflight: nothing recorded yet, nothing pushed to the owner.
+        try {
+          const me = await client.whoami();
+          if (!me.authenticated) throw new PaymentRefused("airi_unauthenticated", "Airi session is not signed in; a human must run `airi-cli auth login`.");
+        } catch (error) { refuse(error); }
+        let card = "card";
+        try {
+          const method = (await client.listPaymentMethods()).find(m => m.id === options.paymentMethodId);
+          if (!method) throw new PaymentRefused("airi_payment_method_unavailable", "The configured Airi payment method is not available for agentic checkout.");
+          card = maskPaymentMethod(method);
+        } catch (error) { refuse(error); }
+
+        // 2. Fresh TPA gate, then the mandate (owner approval request).
+        await beforeSign();
+        let mandate;
+        try {
+          mandate = await client.createMandate({ source: options.source, paymentMethodId: options.paymentMethodId, merchantName: r.merchant.name, merchantUrl: merchant.url,
+            merchantCountry: merchant.country, totalAmount: amount, currency: "USD", items, description: `TPA ${r.checkoutId} (${r.receipt.mandateHash.slice(0, 12)})` });
+        } catch (error) { return refuse(error); }
+
+        // 3. Record the provider id before anything else happens with it.
+        try { await onSigned(mandate.mandateId); } catch (error) { await cancelQuietly(mandate.mandateId); throw error; }
+        await options.onApprovalRequested?.({ mandateId: mandate.mandateId, passkeyUrl: mandate.passkeyUrl, merchant: r.merchant.name, amount, currency: "USD", items, card });
+
+        // 4. One-time credential (file only), checkout, delete.
+        const file = createAiriCredentialFile(options.credentialDir);
+        let outcome: AiriCheckoutOutcome;
+        try {
+          try { await client.getCredential({ mandateId: mandate.mandateId, file: file.path, timeoutSeconds: options.approvalTimeoutSeconds ?? 300 }); }
+          catch (error) {
+            if (error instanceof AiriCliError && error.reason === "airi_approval_timeout") await cancelQuietly(mandate.mandateId);
+            return refuse(error);
+          }
+          try {
+            outcome = await options.submitCheckout({ credentialFile: file.path, mandateId: mandate.mandateId, merchant: { id: r.merchant.id, name: r.merchant.name, ...merchant }, amount, currency: "USD", request: r });
+          } catch {
+            // Unknown whether the merchant charged the card: do not guess a result; the row stays "sent" for manual reconcile.
+            throw new PaymentRefused("airi_checkout_unknown", `Checkout outcome unknown for Airi mandate ${mandate.mandateId}; not reported, not retried. Check the merchant, then report it with \`airi-cli mandate result\`.`);
+          }
+        } finally { file.dispose(); }
+
+        // 5. Always report the outcome to Airi.
+        let reported = "true";
+        try { await client.reportResult({ mandateId: mandate.mandateId, result: outcome.result, ...(outcome.reason ? { reason: outcome.reason } : {}) }); }
+        catch { reported = "false"; }
+        if (outcome.result !== "SUCCEEDED") throw new PaymentRefused(`airi_${outcome.result.toLowerCase()}`, `Merchant checkout ${outcome.result} for Airi mandate ${mandate.mandateId}${outcome.reason ? `: ${outcome.reason}` : ""}.`);
+        return { rail, mode: "live", status: "succeeded", reference: mandate.mandateId,
+          detail: { paymentMandateId: mandate.mandateId, card, to: target.payee, amountBaseUnits: target.railAmount, amount, currency: "USD", fee: "0", airiResultReported: reported } };
       }, reconcile);
     },
   };
