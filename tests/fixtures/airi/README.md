@@ -8,3 +8,4 @@ card digits here are FAKE test values; no real account data, tokens or card numb
   `mandate cancel` prints `{"status":"ok"}`; `mandate list` returns `{items, hasMore, page, size}` with `mandateId`,
   `status`, `createdAt`. Field names not shown verbatim in those docs (payment method brand/last4 spelling, list
   totals) are parsed tolerantly in `shopper/airi.ts` and must be re-checked against the first real response.
+- `credential-file-fake.json`: a stand-in for the file `get-credential --file` writes (field names guessed; all digits are dummy zeros plus 4242). Used by `tests/airi.handoff.test.ts` to prove only the last 4 leave the file.

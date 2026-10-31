@@ -172,14 +172,14 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-Without a database, 223 tests run across 23 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
+Without a database, 232 tests run across 24 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
 
 ```sh
 TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' \
 TPA_DISPATCH_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_dispatch_test' pnpm test
 ```
 
-The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **308 library tests across 22 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-10-29, at c467042; the 19 offline Airi CLI tests added since need no database and were not part of that run).
+The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **308 library tests across 22 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-10-29, at c467042; the 19 offline Airi CLI tests and 9 manual-handoff tests added since need no database and were not part of that run).
 
 Ledger tests (local in-memory EVM, no database):
 
@@ -189,7 +189,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 223 offline library tests and the 20 ledger tests.
+The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 232 offline library tests and the 20 ledger tests.
 
 ## Red-team demo (local, in memory)
 
@@ -278,7 +278,7 @@ shopper intent + budget
   -> merchant order number           (TAP signed)
 ```
 
-Files: `shopper/tap.ts` (TAP signer and merchant verifier), `shopper/merchant.ts` (demo merchant with attack modes), `shopper/agent.ts` (planner), `shopper/payments.ts` (rails), `shopper/airi.ts` (Airi CLI wrapper), `shopper/flow.ts` (orchestration), `scripts/shopper-demo.ts` (CLI).
+Files: `shopper/tap.ts` (TAP signer and merchant verifier), `shopper/merchant.ts` (demo merchant with attack modes), `shopper/agent.ts` (planner), `shopper/payments.ts` (rails), `shopper/airi.ts` (Airi CLI wrapper), `shopper/handoff.ts` (manual checkout handoff), `shopper/live-buy.ts` + `scripts/airi-buy.ts` (`pnpm airi:buy`, config in `config/airi-live.json`), `shopper/flow.ts` (orchestration), `scripts/shopper-demo.ts` (CLI).
 
 ### Visa Trusted Agent Protocol details
 
@@ -321,12 +321,29 @@ Flow (`shopper/payments.ts` `createAiriCliAdapter`, CLI wrapper in `shopper/airi
 1. Preflight, nothing recorded: the signed target must be `airwallex:airi-card` paying `awx-airi-merchant:<the signed merchant id>`, the merchant must be in the server-side Airi merchant directory (https URL + country), `airi-cli auth whoami` must report signed in, and `AIRI_PAYMENT_METHOD_ID` must still be listed by `airi-cli payment-methods list`.
 2. Fresh TPA gate, then `airi-cli mandate create --source --payment-method-id --merchant-name --merchant-url --merchant-country --total-amount --currency --item ... --description` for exactly the signed merchant, items (plus shipping and tax lines) and total. This pushes a passkey approval to the Airi account owner; `onApprovalRequested` gets the `passkey_url` and order summary to show them.
 3. The mandate id is recorded in the dispatch ledger before anything else (the "sent" marker). From then on a retry only reconciles (`airi-cli mandate list --status COMPLETED`); it never creates a second mandate or fetches the credential again. If the TPA gate fails here the mandate is cancelled (`mandate cancel`, status `DENIED`).
-4. `airi-cli mandate get-credential --mandate-id <id> --file <fresh 0700 dir>/credential.json` blocks until the owner approves (default 300 s; a timeout cancels the mandate). The credential stays in that 0600 file: the adapter never reads it, the injected `submitCheckout` receives only the path, and the directory is deleted as soon as checkout returns or throws.
+4. `airi-cli mandate get-credential --mandate-id <id> --file <fresh 0700 dir>/credential.json` blocks until the owner approves (default 300 s; a timeout cancels the mandate). The credential stays in that 0600 file: the adapter never reads it, the injected `submitCheckout` receives only the path (the manual handoff below reads only the last 4 digits from it), and the directory is deleted as soon as checkout returns or throws.
 5. `airi-cli mandate result --result SUCCEEDED|CANCELLED|DECLINED` is always reported. Only `SUCCEEDED` settles the dispatch (`mode: "live"`, reference = mandate id, card shown as brand + last 4 only). If the checkout step crashes the outcome is unknown: nothing is reported or retried, the row stays read-only for manual reconcile.
 
 Configuration: `AIRI_LIVE=1`, `AIRI_PAYMENT_METHOD_ID` (from `pnpm airi:preflight`), optional `AIRI_SOURCE` (default `TPA Shopper`, must match the `--client-name` used at login) and `AIRI_CLI_BIN`; plus `createShopperRig({ airi: { merchants: { <merchantId>: { url, country } }, submitCheckout, onApprovalRequested } })`. The local demo merchant cannot take a card, so a live run needs a real merchant checkout and a `submitCheckout` that fills its card form from the file. Live runs persist the dispatch journal to `artifacts/airi-dispatch-journal.json` (gitignored).
 
 Sign-in is a human step: `airi-cli auth login --client-name "TPA Shopper"` prints a verification URL and code; the owner approves it while `airi-cli auth poll` runs. The app never runs `auth login` or `auth logout` and never reads the CLI's session file. `pnpm airi:preflight` is read-only: it prints the session expiry and each payment method as id + brand + last 4.
+
+#### Manual checkout handoff and `pnpm airi:buy` (real merchants)
+
+`config/airi-live.json` is the live config (no secrets): the Airi merchant allowlist (`gumroad-kyle`: Gumroad, https://kyletwebster.gumroad.com/l/ZHvXw, US, $1.00 item, per-buy cap $1.10; `itch-limezu`: itch.io, https://limezu.itch.io/modernoffice, checkout `/purchase`, US, $2.50 minimum, per-buy cap $2.75), a run total cap of $5.00, the payment method id (`AIRI_PAYMENT_METHOD_ID` overrides it), the approval timeout (300 s) and the handoff timeout (20 min). Expected tax (CT 6.35%) is part of the signed total: $1.06 and $2.66; `--tax-cents` / `--price-cents` adjust it within the caps.
+
+```sh
+pnpm airi:buy -- --merchant gumroad-kyle               # plan only: caps and checkout, no airi-cli call
+AIRI_LIVE=1 pnpm airi:buy -- --merchant gumroad-kyle   # one real buy
+AIRI_LIVE=1 pnpm airi:buy -- --merchant itch-limezu
+```
+
+Before anything runs: the merchant must be allowlisted, price + tax must be within the per-buy cap, everything already in `artifacts/airi-dispatch-journal.json` (reserved, sent or settled; a cancelled mandate still counts) plus this buy must be within the run cap, and a merchant that already has a journal row is refused (`--allow-repeat` only after confirming the first attempt was unpaid). Then the TPA v3.1 mandate for the exact checkout is created, approved and consumed (standalone pilot: in-memory TPA store and synthetic passkey, as in `demo:shopper`; the human approval that gates the money is the Airi passkey), and the live adapter runs steps 1 to 5 above with the manual handoff (`shopper/handoff.ts`) as its `submitCheckout`. The code never drives a browser and never fills a card form:
+
+- after `get-credential` writes the one-time card to `$TMPDIR/airi-cred-XXXXXX/credential.json` (0600, directory 0700), it prints only that path and the masked last 4 (`****1234`) and writes `artifacts/airi-handoff/pending.json` (0600: mandate id, merchant, checkout URL, amount, credential path, masked card, signal path, deadline; no card data);
+- a separate operator (a person or a GUI browser agent) fills the merchant form from the file and signals completion by writing one line to `artifacts/airi-handoff/<mandateId>.done` (or typing it at the prompt when stdin is a terminal): `SUCCEEDED <merchant order/receipt id>`, `DECLINED <reason>` or `CANCELLED <reason>` (JSON `{"result":"SUCCEEDED","orderId":"..."}` also works; SUCCEEDED without an order id is ignored);
+- the credential directory is then deleted, `mandate result` is always reported, and the outcome (with `merchantOrderId` and the one-time card's last 4) is settled in the journal; one summary line per run goes to `artifacts/airi-buy-log.jsonl`;
+- no signal before the deadline: the mandate is cancelled (`DENIED`), the file is deleted, and the journal row stays "sent" (reconcile only, never re-bought).
 
 Known gaps: payment method and mandate-list field spellings beyond those in the CLI docs (`paymentMethodId`, `mandate_id`, `passkey_url`, `mandateId`, `status`) are parsed tolerantly and must be checked against the first real responses; a crash between `mandate create` and recording its id leaves an unapproved mandate in Airi (no money moves; the owner can deny it).
 

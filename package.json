@@ -29,6 +29,7 @@
     "demo:animated": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js --json examples/redteam-demo.json --animated examples/redteam-demo-animated.html",
     "demo:shopper": "tsc -p tsconfig.demo.json && node .demo-build/scripts/shopper-demo.js",
     "airi:preflight": "tsc -p tsconfig.demo.json && node .demo-build/scripts/airi-preflight.js",
+    "airi:buy": "tsc -p tsconfig.demo.json && node .demo-build/scripts/airi-buy.js",
     "demo:video": "pnpm demo:animated && node scripts/record-demo-video.mjs examples/redteam-demo-animated.html artifacts/tpa-demo.mp4"
   },
   "dependencies": {

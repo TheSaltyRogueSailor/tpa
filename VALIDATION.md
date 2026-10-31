@@ -38,6 +38,12 @@ Three timing demonstrations and three SQL lifecycle tests from an independent re
 
 These are local results. The Airwallex rail is a mock by default; the opt-in Airi CLI adapter (`AIRI_LIVE=1`) is tested only against recorded and documented `airi-cli` output, and no Airi mandate, credential, Airwallex sandbox or other provider call was made. Metal live runs use alta-testnet only. `usd-usdz-par` is a demo assumption. None of this is bank certification.
 
+## Live Airi manual checkout handoff (2026-10-31, branch lumi/airi-payments)
+
+`pnpm check`, `pnpm build` and `pnpm test` passed: **232 tests across 24 files** run without a database (20 files pass, 4 database files skipped; 104 tests skipped). `pnpm demo:shopper` (mock) passed 7 of 7 scenarios. New: `config/airi-live.json` (two allowlisted US merchants, per-buy caps $1.10 / $2.75, run cap $5.00), `shopper/handoff.ts`, `shopper/live-buy.ts`, `scripts/airi-buy.ts` (`pnpm airi:buy`), and `tests/airi.handoff.test.ts` (9 tests, fake `airi-cli` over the recorded fixtures plus a fake credential file with dummy digits): the config and caps (per-buy, run total over the journal, repeat buy, unknown merchant, price floor), last-4-only masking, signal parsing, success by marker file and by stdin (only the path and `****4242` printed, file 0600 then deleted, `mandate result SUCCEEDED`, order id in the journal, no card values in output, journal, log or pending file), timeout (mandate cancelled, file deleted, no result, row stays sent), DECLINED (reported), and signed out (no mandate).
+
+Not run: any real `airi-cli` mandate, credential or result; no purchase was made. `pnpm airi:buy` without `AIRI_LIVE=1` was run for both merchants (plan only: $1.06 and $2.66) and the cap refusals were checked by hand.
+
 ## Remaining acceptance requirements
 
 The integrating host must supply and validate real authenticated sessions, owner designation, bans/disablement, session revocation, transactional principal locks and exact HTTPS/RP configuration. Real device/browser-origin staging, real MySQL concurrent-operation/restart acceptance, backup/restore drills, independent penetration/security review and purchaser legal/IP review remain required. Local tests are not bank certification, independent face liveness or proof of assets/settlement. No perfect-code or guaranteed-fraud-prevention claim is made.

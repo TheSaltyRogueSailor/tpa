@@ -13,6 +13,7 @@
     "scripts/demo/**/*.ts",
     "scripts/shopper-demo.ts",
     "scripts/airi-preflight.ts",
+    "scripts/airi-buy.ts",
     "shopper/**/*.ts"
   ],
   "exclude": [

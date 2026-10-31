@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { AiriCliError, centsToMajor, createAiriCredentialFile, maskPaymentMethod, type AiriClient, type AiriMandateItem, type AiriTransactionResult } from "./airi.js";
+import { AiriHandoffTimeout } from "./handoff.js";
 import { isBoundDispatchRecord, parseDispatchRecord, type TpaBoundDispatchRecord, type TpaDispatchRecord, type TpaDispatchStore } from "../src/dispatch.js";
 import {
   canonicalTpaMandate, compareCheckoutToMandate, boundFingerprintInput, normalizeTpaCheckout, tpaBoundCheckoutMandateSchema,
@@ -501,11 +502,19 @@ function freezeDirectory(directory: Record<string, { url: string; country: strin
 }
 
 /** What the checkout step reports back. Only SUCCEEDED settles the dispatch; it is always reported to Airi. */
-export type AiriCheckoutOutcome = { result: AiriTransactionResult; reason?: string };
+export type AiriCheckoutOutcome = {
+  result: AiriTransactionResult; reason?: string;
+  /** Merchant order / receipt id (manual handoff: required for SUCCEEDED). Recorded in the dispatch result. */
+  merchantOrderId?: string;
+  /** Last 4 digits of the one-time card, for the record (never more). */
+  oneTimeCardLast4?: string;
+};
 /**
  * Fills the merchant's card form with the one-time credential and submits it. It receives only the PATH of the 0600
  * credential file (written by airi-cli); it must read the values at the moment it fills the form and never log,
  * return or persist them. The adapter deletes the file as soon as this resolves or throws.
+ * For live runs the submitter is the manual handoff (shopper/handoff.ts): a separate operator / GUI agent fills the
+ * form and signals completion; throwing AiriHandoffTimeout makes the adapter cancel the mandate.
  */
 export type AiriCheckoutSubmitter = (input: {
   credentialFile: string; mandateId: string; merchant: Readonly<{ id: string; name: string; url: string; country: string }>;
@@ -647,7 +656,13 @@ export function createAiriCliAdapter(ledger: DispatchLedger, options: AiriCliAda
           }
           try {
             outcome = await options.submitCheckout({ credentialFile: file.path, mandateId: mandate.mandateId, merchant: { id: r.merchant.id, name: r.merchant.name, ...merchant }, amount, currency: "USD", request: r });
-          } catch {
+          } catch (error) {
+            if (error instanceof AiriHandoffTimeout) {
+              // Manual handoff: nobody reported the checkout in time. Cancel (DENIED) so the one-time card cannot be
+              // used later; the file is deleted in the finally below. The row stays "sent" (reconcile only).
+              const cancelled = await client.cancelMandate(mandate.mandateId).then(() => true, () => false);
+              throw new PaymentRefused("airi_handoff_timeout", `${error.message} Mandate ${cancelled ? "cancelled" : "cancel FAILED (cancel it with \`airi-cli mandate cancel\`)"}; credential file deleted.`);
+            }
             // Unknown whether the merchant charged the card: do not guess a result; the row stays "sent" for manual reconcile.
             throw new PaymentRefused("airi_checkout_unknown", `Checkout outcome unknown for Airi mandate ${mandate.mandateId}; not reported, not retried. Check the merchant, then report it with \`airi-cli mandate result\`.`);
           }
@@ -659,7 +674,9 @@ export function createAiriCliAdapter(ledger: DispatchLedger, options: AiriCliAda
         catch { reported = "false"; }
         if (outcome.result !== "SUCCEEDED") throw new PaymentRefused(`airi_${outcome.result.toLowerCase()}`, `Merchant checkout ${outcome.result} for Airi mandate ${mandate.mandateId}${outcome.reason ? `: ${outcome.reason}` : ""}.`);
         return { rail, mode: "live", status: "succeeded", reference: mandate.mandateId,
-          detail: { paymentMandateId: mandate.mandateId, card, to: target.payee, amountBaseUnits: target.railAmount, amount, currency: "USD", fee: "0", airiResultReported: reported } };
+          detail: { paymentMandateId: mandate.mandateId, card, to: target.payee, amountBaseUnits: target.railAmount, amount, currency: "USD", fee: "0", airiResultReported: reported,
+            ...(outcome.merchantOrderId ? { merchantOrderId: outcome.merchantOrderId.slice(0, 128) } : {}),
+            ...(outcome.oneTimeCardLast4 && /^\d{4}$/.test(outcome.oneTimeCardLast4) ? { oneTimeCard: `****${outcome.oneTimeCardLast4}` } : {}) } };
       }, reconcile);
     },
   };
