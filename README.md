@@ -3,6 +3,8 @@
 **Submission to the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/), Starter Kit 09 (Approval-Bound Shopping Agent).**
 Built by Raul A. Goodwin, Founder of Dingdong Platform, LLC (18-year Navy career, Special Operations Corpsman (SOCM)).
 
+**Demo video (4:45):** [Watch the walkthrough](https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4), which covers the TPA commercial, the red-team attack demo, and two real purchases with Airwallex Airi, each approved by passkey. Also on the [hackathon-v1 release](https://github.com/TheSaltyRogueSailor/tpa/releases/tag/hackathon-v1).
+
 ## For judges: start here
 
 ### What TPA is
