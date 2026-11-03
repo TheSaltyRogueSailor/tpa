@@ -1,4 +1,134 @@
-# TPA Authorization Pilot: standalone library
+# TPA: Triple Protection Authentication
+
+**Submission to the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/), Starter Kit 09 (Approval-Bound Shopping Agent).**
+Built by Raul A. Goodwin, Founder of Dingdong Platform, LLC (18-year Navy career, Special Operations Corpsman (SOCM)).
+
+## For judges: start here
+
+### What TPA is
+
+AI agents can now shop and pay. TPA (Triple Protection Authentication) is the approval layer that sits between an agent and the money. The agent can plan a cart, but it cannot spend a cent until the owner approves those exact terms with a passkey, and the payment is refused if anything changes after the approval: the merchant, an item, a price, shipping, tax or the total. Each approval can be used once.
+
+TPA Shopper (`shopper/`) is the hackathon app built on it: a Kit 09 shopping agent that pays through Airwallex Airi (and, for the Metal Award, in USDZ on Metal testnet) only after all three protections pass.
+
+### The three protections
+
+| Protection | Question it answers | How it is enforced |
+| --- | --- | --- |
+| 1. Presence | Is this a known, signing agent, right now? | Every agent request to the merchant carries a Visa Trusted Agent Protocol signature (RFC 9421, Ed25519, nonce, 8 minute window). Unsigned or replayed requests are refused (`not_signed`, `nonce_replayed`). |
+| 2. Permission | Is it asking for exactly what the owner allowed? | The server issues an Ed25519-signed TPA mandate (v3.1) that binds merchant, line items, shipping, tax, total, quote and payment target. At payment time the real checkout must match it exactly, once (`terms_changed:*` otherwise). Spending caps are checked in code, not in a prompt. |
+| 3. Proof of Person | Did the real owner approve it? | A WebAuthn passkey ceremony whose challenge is derived from the mandate hash, so the approval cannot be reused for any other cart. On the live Airwallex path, Airi also asks the owner for a passkey approval of the exact amount before it issues a one-time card. |
+
+Card data never enters the agent's context: the one-time card from Airi is written to a 0600 file that the code never reads (only the last 4 digits are shown), and it is deleted right after checkout.
+
+### Built on Rootstock, secured by Bitcoin
+
+Rootstock is the smart-contract chain that is merge-mined with Bitcoin, so Bitcoin miners' hash power secures it. TPA's audit trail is designed to be anchored there:
+
+- `ledger/` contains `TPALedger`, a Solidity attestation registry (OpenZeppelin AccessControl and Pausable) that records, consumes and revokes each approved mandate hash exactly once, with a 300 second lifetime.
+- It is compiled with solc 0.8.24 for the `paris` EVM target, the Rootstock-compatible target from Rootstock's Hardhat guide, and passes 20 tests.
+- Every TPA mandate already carries the ledger domain `dingdong-tpa/rootstock-testnet/attestation-v2`, so the same hash the owner approved is the one that will be recorded.
+
+Status, stated plainly: the contract is tested on a local in-memory EVM only. It is **not deployed to Rootstock testnet yet**, and no transaction in this submission is on Rootstock. Deploying it and recording each consumed mandate on Rootstock testnet is the next milestone. The live chain payment in this submission is on Metal testnet (below).
+
+### Why two chains, and no bridge (design and roadmap)
+
+> "Your money moves on Doge. Its bodyguard lives on Bitcoin."
+
+This is the design TPA is built toward for DingDong:
+
+- DingDong's coins live on Dogecoin. That is where the money moves.
+- TPA's guard, meaning its rules and its audit records, is meant to live on Rootstock, which is secured by Bitcoin.
+- There is deliberately no bridge between the two. TPA checks every money move before it goes through, and it does that from its own side.
+
+The point of keeping them apart: someone who compromises the money side does not get to change TPA's rules or rewrite its records on the other side, and with no bridge there is no shared contract or custodian that both sides depend on, so there is no shared door to break through. This does not make the system automatically more secure just because there are two chains; each side still has to be secured on its own, and TPA's off-chain server is still a trust point (it holds the mandate signing key and is the only recorder allowed to write to `TPALedger`).
+
+What exists today versus the roadmap:
+
+| Piece | Today | Roadmap |
+| --- | --- | --- |
+| Dogecoin side | The mandate format supports `DOGE` amounts and a `dogecoin-mainnet` payment network, and `src/dogecoin.ts` validates Dogecoin addresses (checksum only). TPA does not connect to a Dogecoin node, wallet or transaction. | Gate real DingDong Dogecoin transfers behind a consumed TPA mandate. |
+| Rootstock side | `TPALedger` is written for Rootstock and tested on a local EVM. Not deployed. | Deploy to Rootstock testnet and record every consumed mandate there. |
+| Hackathon payments | Real Airwallex Airi purchases and a live USDZ transfer on Metal testnet (below). | Same three protections in front of every rail. |
+
+### Airwallex integration (Airi, Kit 09)
+
+`shopper/airi.ts` wraps the Airwallex Airi CLI (`airi-cli` 0.1.0-beta.3). After TPA approves and consumes the mandate, the adapter (`createAiriCliAdapter` in `shopper/payments.ts`):
+
+1. checks the Airi session and payment method, and that the merchant is on the server-side allowlist;
+2. runs `airi-cli mandate create` for exactly the signed merchant, items and total, which sends the owner an Airi passkey approval;
+3. records the Airi mandate id before anything else, so a retry can only reconcile, never pay twice;
+4. fetches the one-time card into a locked-down file with `mandate get-credential`, hands it to checkout, then deletes it;
+5. always reports `mandate result` (`SUCCEEDED`, `DECLINED` or `CANCELLED`) back to Airi.
+
+Live mode is opt-in with `AIRI_LIVE=1`. Without it, a mock adapter is used and no Airwallex call is made.
+
+### Proof: two real purchases through Airi (Oct 31, 2026)
+
+Two real purchases were made by the agent through Airwallex Airi with one-time cards, each approved by the owner's passkey. Both were reported `SUCCEEDED` to Airi.
+
+| Time (ET) | Merchant | TPA / Airi cap | Airi mandate | Merchant order id |
+| --- | --- | --- | --- | --- |
+| Oct 31, 3:07 AM | Gumroad (kyletwebster, $1.00 item) | $1.06 incl. expected CT tax | `mdt_uspdzbsbqhnpuhgwaw8` | `GF3w8ZC9AGDoa-PPkrHiQA==` |
+| Oct 31, 3:10 AM | itch.io (limezu, Modern Office, $2.50) | $2.66 incl. expected CT tax | `mdt_uspdzbsbqhnpul0a9sx` | `itch-checkout-40774283` (receipt #1886-7403, $2.50) |
+
+The video walkthrough shows both purchases with every card field blurred. No card numbers appear anywhere in this repository.
+
+### Proof: live USDZ payment on Metal testnet (Nov 3, 2026)
+
+`METAL_LIVE=1 METAL_DEMO_BUDGET_CENTS=2000 pnpm demo:shopper` paid a $12.49 cart as a real 12.49 USDZ transfer on Metal alta-testnet (chain 63825), after the same three protections, and waited for finality:
+[0x12f8141681a020695e7cfcea1266ce4682cc25b69bcc7877c14fbbdb8decc1cc](https://testnet.metalntwx.com/tx/0x12f8141681a020695e7cfcea1266ce4682cc25b69bcc7877c14fbbdb8decc1cc). All 7 scenarios passed in that run (2 paid, 5 attacks blocked).
+
+### Run it (about 2 minutes, no accounts or keys needed)
+
+Requirements: Node.js 22 or later and pnpm 10.18.0.
+
+```sh
+git clone https://github.com/TheSaltyRogueSailor/tpa && cd tpa
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm demo:shopper       # TPA Shopper: 2 paid checkouts, 5 attacks blocked (mock Airi and mock Metal)
+pnpm demo               # red-team demo: one legit checkout, then 5 attack types blocked
+pnpm check && pnpm test # typecheck and tests
+```
+
+Live modes need the owner's own accounts and are opt-in:
+
+- **Live Metal:** put a testnet RPC URL in `.env.metal` and a funded throwaway payer key in `.env.metal-wallet` (both gitignored, mode 600), then `METAL_LIVE=1 METAL_DEMO_BUDGET_CENTS=2000 pnpm demo:shopper`. See "Live Metal mode".
+- **Live Airi:** sign in with `airi-cli auth login --client-name "TPA Shopper"`, run `pnpm airi:preflight`, then `AIRI_LIVE=1 pnpm airi:buy -- --merchant gumroad-kyle`. See "Live Airi mode".
+
+What the TPA Shopper demo shows:
+
+| Scenario | Result | Stopped by |
+| --- | --- | --- |
+| 1. Agent buys within budget, owner approves, paid via Airwallex (mock) | PAID | |
+| 2. Same flow paid in USDZ on Metal (mock, or live with `METAL_LIVE=1`) | PAID | |
+| A. Merchant raises a price after approval | BLOCKED | `terms_changed:items_mismatch` |
+| B. Checkout injects an extra $49.99 protection plan | BLOCKED | `terms_changed:items_mismatch` |
+| C. Lookalike merchant id (`harbor-supp1y`) | BLOCKED | `terms_changed:merchant_mismatch` |
+| D. Agent tries to pay without the owner's passkey | BLOCKED | `intent` |
+| E. Replayed or unsigned agent request | BLOCKED | Visa TAP `nonce_replayed`, `not_signed` |
+
+### Test results (Nov 3, 2026)
+
+| Check | Result |
+| --- | --- |
+| `pnpm check` (TypeScript) | pass |
+| `pnpm test` with the MySQL suites (throwaway MySQL 9.7.4) | 337 of 337 tests pass, 24 files |
+| `pnpm test` without a database | 233 pass, 104 database tests skipped |
+| Ledger (`cd ledger && pnpm test`) | 20 of 20 pass |
+| `pnpm demo:shopper` (mock) and `pnpm demo` | all scenarios pass |
+| `METAL_LIVE=1` live Metal demo | 7 of 7 pass, tx above |
+
+### Honest limits
+
+- In the demos the owner's passkey is a synthetic authenticator with real P-256 keys and real WebAuthn verification. In the real Airi purchases the human approval was the owner's Airi passkey.
+- The demo merchant is local. The two real purchases used a manual checkout handoff (`shopper/handoff.ts`): an operator filled the merchant form from the one-time card file and signaled `SUCCEEDED <order id>`; the code never drives a browser or reads the card.
+- The Visa key directory is a local stand-in for Visa's key service; Visa ID tokens need Visa Intelligent Commerce onboarding.
+- TPA is an authorization layer. It holds no funds and is not a bank or payment processor.
+
+---
+
+## The TPA library (authorization pilot)
 
 This is a reusable, framework-neutral **authorization-evidence pilot**. It creates canonical single-use checkout mandates (mandate version 3.0, plus the 3.1 bound checkout mandate used by TPA Shopper) that bind the merchant, line items, shipping, tax and total, signs each one with a server Ed25519 key, binds the passkey/WebAuthn challenge to that exact mandate for a host-authenticated owner, refuses use unless the checkout presented at consume matches exactly, records approvals and refusals in an audit log, and persists credential, intent and evidence state with MySQL row locking. It is not a payment service, bank integration, custody system, blockchain signing service, wallet, transfer executor, settlement engine, identity proofing service, or independent liveness system.
 
@@ -172,14 +302,14 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-Without a database, 232 tests run across 24 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
+Without a database, 233 tests run across 24 files and 104 are skipped. The database suites (mandate hardening, Proof of Permission refusals, store lifecycle, the v3.1 SQL lifecycle and the dispatch store) run against the real service, real MySQL store and real WebAuthn verification when both variables point at disposable MySQL or MariaDB schemas:
 
 ```sh
 TPA_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_test' \
 TPA_DISPATCH_TEST_DATABASE_URL='mysql://USER:PASS@127.0.0.1:3306/tpa_dispatch_test' pnpm test
 ```
 
-The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **308 library tests across 22 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-10-29, at c467042; the 19 offline Airi CLI tests and 9 manual-handoff tests added since need no database and were not part of that run).
+The suites drop and recreate their tables in those schemas, so never point them at a shared or production database. With both set, all **337 library tests across 24 files** pass (verified locally on a throwaway MySQL 9.7.4 server on 2026-11-03).
 
 Ledger tests (local in-memory EVM, no database):
 
@@ -189,7 +319,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm test
 ```
 
-The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 232 offline library tests and the 20 ledger tests.
+The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 233 offline library tests and the 20 ledger tests.
 
 ## Red-team demo (local, in memory)
 

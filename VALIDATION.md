@@ -44,6 +44,10 @@ These are local results. The Airwallex rail is a mock by default; the opt-in Air
 
 Not run: any real `airi-cli` mandate, credential or result; no purchase was made. `pnpm airi:buy` without `AIRI_LIVE=1` was run for both merchants (plan only: $1.06 and $2.66) and the cap refusals were checked by hand.
 
+## Submission readiness (2026-11-03, branch lumi/airi-payments)
+
+The manual handoff now accepts merchant order ids with base64 `=` padding and `+` (the real Gumroad id `GF3w8ZC9AGDoa-PPkrHiQA==` was being cut short), with a new test. `pnpm check`, `pnpm build` and `pnpm audit --prod` (no known vulnerabilities) passed. `pnpm test` passed **337 tests across 24 files** with both database suites on a throwaway local MySQL 9.7.4 server; without a database, 233 run and 104 are skipped. The ledger passed **20 tests**. The mock shopper demo and the red-team demo passed. The live Metal demo (`METAL_LIVE=1 METAL_DEMO_BUDGET_CENTS=2000 pnpm demo:shopper`) passed 7 of 7 scenarios and settled a finalized 12.49 USDZ transfer on Metal testnet, tx `0x12f8141681a020695e7cfcea1266ce4682cc25b69bcc7877c14fbbdb8decc1cc`. No Rootstock deployment was made.
+
 ## Remaining acceptance requirements
 
 The integrating host must supply and validate real authenticated sessions, owner designation, bans/disablement, session revocation, transactional principal locks and exact HTTPS/RP configuration. Real device/browser-origin staging, real MySQL concurrent-operation/restart acceptance, backup/restore drills, independent penetration/security review and purchaser legal/IP review remain required. Local tests are not bank certification, independent face liveness or proof of assets/settlement. No perfect-code or guaranteed-fraud-prevention claim is made.
