@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "description": "Standalone WebAuthn-backed transfer-authorization pilot. Payment rails are mocked by default; real Metal testnet (USDZ) payments are optional behind METAL_LIVE=1.",
   "exports": {
     ".": {
