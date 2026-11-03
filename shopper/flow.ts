@@ -14,12 +14,14 @@ import { createTpaMandateSigner, tpaMandateSignerFromEnv } from "../src/signing.
 import { syntheticAuthenticator } from "../tests/support/authenticator.js";
 import { createMemoryTpaPersistence } from "../scripts/demo/memory-store.js";
 import { planCart, type Plan, type ShoppingIntent } from "./agent.js";
-import { DEMO_MERCHANT, DEMO_MERCHANT_METAL_ADDRESS, type Product } from "./catalog.js";
+import { CATALOG, DEMO_MERCHANT, DEMO_MERCHANT_METAL_ADDRESS, type Product } from "./catalog.js";
 import { startDemoMerchant, type MerchantAttack, type Quote, type QuoteRecord } from "./merchant.js";
 import {
   combineTargetResolvers, createAiriFixtureResolver, createDispatchLedger, createFileDispatchStore, createMemoryDispatchStore, createMetalTargetResolver,
   createMetalUsdzAdapter, createMockAiriAdapter, PaymentRefused, type PaymentAdapter, type PaymentResult,
+  createAiriCliAdapter, createAiriMerchantResolver, type AiriCliAdapterOptions,
 } from "./payments.js";
+import { createAiriCliRunner, createAiriClient, type AiriClient } from "./airi.js";
 import { selectMetalClient } from "./metal.js";
 import { createTapKeyDirectory, createTapSigner, createTapVerifier, type TapTag } from "./tap.js";
 
@@ -47,6 +49,22 @@ export type ShopOptions = ShoppingIntent & { rail?: "airwallex" | "metal"; merch
 /** Mock Airwallex destination fixtures (merchant id -> fixture id). Real Airwallex destinations are not mapped yet. */
 export const DEMO_AIRI_FIXTURES = { [DEMO_MERCHANT.id]: "harbor-supply-mock" } as const;
 
+/** Real Airi checkout settings (AIRI_LIVE=1 only). paymentMethodId / source fall back to AIRI_PAYMENT_METHOD_ID / AIRI_SOURCE. */
+export type AiriLiveConfig = Omit<AiriCliAdapterOptions, "client" | "paymentMethodId" | "source"> & { client?: AiriClient; paymentMethodId?: string; source?: string };
+export type AiriSelection = { live: false } | { live: true; config: AiriCliAdapterOptions };
+/**
+ * Airwallex rail selection. Default (AIRI_LIVE unset): the offline mock, no airi-cli call at all. AIRI_LIVE=1 needs an
+ * explicit live config (Airi merchant directory + checkout submitter) and refuses to start without one: the local demo
+ * merchant cannot take a card, and nothing ever falls back silently between mock and live.
+ */
+export function selectAiriMode(env: NodeJS.ProcessEnv, live?: AiriLiveConfig): AiriSelection {
+  if (env.AIRI_LIVE !== "1") return { live: false };
+  if (!live) throw new PaymentRefused("airi_misconfigured", "AIRI_LIVE=1 needs an Airi live config (merchant directory and checkout submitter); refusing to start rather than fall back to the mock.");
+  return { live: true, config: { ...live, client: live.client ?? createAiriClient(createAiriCliRunner({ env })),
+    paymentMethodId: live.paymentMethodId ?? env.AIRI_PAYMENT_METHOD_ID ?? "", source: live.source ?? env.AIRI_SOURCE ?? "TPA Shopper" } };
+}
+const catalogName = (sku: string) => CATALOG.find(p => p.sku === sku)?.name;
+
 /**
  * metal: "auto" (default) uses the real alta-testnet client only when METAL_LIVE=1 and credentials are present,
  * otherwise the mock; "mock" always uses the mock (tests).
@@ -57,7 +75,8 @@ export const DEMO_AIRI_FIXTURES = { [DEMO_MERCHANT.id]: "harbor-supply-mock" } a
  */
 const DEMO_SYNTHETIC_OWNER_ID = 1;
 
-export async function createShopperRig(options: { agentKeyPath?: string; metal?: "auto" | "mock"; env?: NodeJS.ProcessEnv; dispatchStore?: TpaDispatchStore; dispatchJournalPath?: string } = {}) {
+export async function createShopperRig(options: { agentKeyPath?: string; metal?: "auto" | "mock"; env?: NodeJS.ProcessEnv; dispatchStore?: TpaDispatchStore; dispatchJournalPath?: string; airi?: AiriLiveConfig } = {}) {
+  const airiSelection = selectAiriMode(options.env ?? process.env, options.airi);
   const owner = { principalId: DEMO_SYNTHETIC_OWNER_ID, sessionHash: "a".repeat(64), owner: true as const };
   const ctx = { owner, headers: { origin: ORIGIN } };
   const now = () => Date.now();
@@ -75,7 +94,8 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     },
   };
   let metalTargets: ReturnType<typeof createMetalTargetResolver> = () => null;
-  const targets = combineTargetResolvers(input => metalTargets(input), createAiriFixtureResolver(DEMO_AIRI_FIXTURES));
+  const targets = combineTargetResolvers(input => metalTargets(input),
+    airiSelection.live ? createAiriMerchantResolver(airiSelection.config.merchants) : createAiriFixtureResolver(DEMO_AIRI_FIXTURES));
   const service = createTpaService({ store: memory.store, evidence: memory.evidence, signer, authority: createTpaAuthority({ enabled: true, origin: ORIGIN, rpID: RP_ID }), now, quotes, targets });
   const phone = syntheticAuthenticator(ORIGIN, RP_ID);
   const reg = await service.registrationOptions(ctx, { label: "Owner's phone", consent: true });
@@ -89,7 +109,7 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   // Server-side dispatch ledger: money moves only for an intent the TPA store shows as consumed, for exactly the
   // signed mandate's amount, currency and merchant, once. A host passes createTpaDispatchStore(adapter) (MySQL table
   // tpa_payment_dispatches). This standalone demo has no MySQL, so live Metal runs persist to a gitignored JSON file.
-  const journalPath = options.dispatchJournalPath ?? (metalSelection.live ? "artifacts/metal-dispatch-journal.json" : undefined);
+  const journalPath = options.dispatchJournalPath ?? (metalSelection.live ? "artifacts/metal-dispatch-journal.json" : airiSelection.live ? "artifacts/airi-dispatch-journal.json" : undefined);
   const ledger = createDispatchLedger({
     store: options.dispatchStore ?? (journalPath ? createFileDispatchStore(journalPath) : createMemoryDispatchStore()),
     // Owner-bound, integrity-checked read (evidence.readIntent) plus Ed25519 verification of the signed mandate.
@@ -107,7 +127,7 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
   } });
   quoteSource = id => merchant.getQuote(id);
   const rails: Record<"airwallex" | "metal", PaymentAdapter> = {
-    airwallex: createMockAiriAdapter(ledger),
+    airwallex: airiSelection.live ? createAiriCliAdapter(ledger, { itemName: catalogName, ...airiSelection.config }) : createMockAiriAdapter(ledger),
     // TPA checks (Proof of Person via passkey, Presence via TAP, Permission via mandate consume) all run before rail.pay().
     metal: createMetalUsdzAdapter(metal, metalSelection.payer, ledger),
   };
@@ -205,6 +225,6 @@ export async function createShopperRig(options: { agentKeyPath?: string; metal?:
     return { firstStatus: first.status, replay: { status: replay.status, ...(await replay.json() as { reason?: string }) }, unsigned: { status: unsigned.status, ...(await unsigned.json() as { reason?: string }) } };
   }
 
-  return { shop, replayCapturedCheckout, service, ctx, merchant, rails, ledger, metal, metalSelection: { live: metalSelection.live, payer: metalSelection.payer, merchant: merchantMetalAddress, reason: metalSelection.reason }, agentTap, auditLog: (intentId?: string) => service.auditLog(ctx, { intentId, limit: 50 }), close: () => merchant.close() };
+  return { shop, replayCapturedCheckout, service, ctx, merchant, rails, ledger, metal, metalSelection: { live: metalSelection.live, payer: metalSelection.payer, merchant: merchantMetalAddress, reason: metalSelection.reason }, airiSelection: { live: airiSelection.live }, agentTap, auditLog: (intentId?: string) => service.auditLog(ctx, { intentId, limit: 50 }), close: () => merchant.close() };
 }
 export type ShopperRig = Awaited<ReturnType<typeof createShopperRig>>;

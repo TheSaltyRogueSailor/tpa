@@ -1,0 +1,33 @@
+{
+  "$comment": "Live Airi buys (AIRI_LIVE=1 pnpm airi:buy -- --merchant <id>). No secrets here: ids, URLs and caps only. Amounts in USD cents. AIRI_PAYMENT_METHOD_ID overrides paymentMethodId.",
+  "version": 1,
+  "source": "TPA Shopper",
+  "paymentMethodId": "e993fd4b-f272-4bdf-ad26-b65b0ff7bbab",
+  "paymentMethodLabel": "X Money Visa",
+  "runTotalCapCents": 500,
+  "handoffTimeoutMinutes": 20,
+  "approvalTimeoutSeconds": 300,
+  "merchants": {
+    "gumroad-kyle": {
+      "name": "Kyle T Webster (Gumroad)",
+      "url": "https://kyletwebster.gumroad.com/l/ZHvXw",
+      "checkoutUrl": "https://kyletwebster.gumroad.com/l/ZHvXw",
+      "country": "US",
+      "recipient": "user:9001",
+      "item": { "sku": "GUMROAD-ZHVXW", "name": "Kyle's Very Nice Paper Layer", "priceCents": 100 },
+      "expectedTaxCents": 6,
+      "capCents": 110
+    },
+    "itch-limezu": {
+      "name": "LimeZu (itch.io)",
+      "url": "https://limezu.itch.io/modernoffice",
+      "checkoutUrl": "https://limezu.itch.io/modernoffice/purchase",
+      "country": "US",
+      "recipient": "user:9002",
+      "item": { "sku": "ITCH-MODERNOFFICE", "name": "Modern Office Revamped RPG Tileset 16x16", "priceCents": 250 },
+      "expectedTaxCents": 16,
+      "capCents": 275,
+      "notes": "Pay-what-you-want, $2.50 minimum; sale ends 2026-11-04."
+    }
+  }
+}
