@@ -93,6 +93,18 @@ describe("handoff signal and masking", () => {
     expect(parseHandoffSignal("CANCELLED")).toEqual({ result: "CANCELLED" });
     expect(parseHandoffSignal("PAID 1")).toBeNull();
   });
+
+  it("order ids: base64 padding and '+' are accepted (real Gumroad sale id), unsafe or malformed ids are still refused", () => {
+    expect(parseHandoffSignal("SUCCEEDED GF3w8ZC9AGDoa-PPkrHiQA==")).toEqual({ result: "SUCCEEDED", orderId: "GF3w8ZC9AGDoa-PPkrHiQA==" });
+    expect(parseHandoffSignal('{"result":"SUCCEEDED","orderId":"GF3w8ZC9AGDoa-PPkrHiQA=="}')).toEqual({ result: "SUCCEEDED", orderId: "GF3w8ZC9AGDoa-PPkrHiQA==" });
+    expect(parseHandoffSignal("SUCCEEDED ab+cd/ef==")).toEqual({ result: "SUCCEEDED", orderId: "ab+cd/ef==" });
+    expect(parseHandoffSignal("SUCCEEDED itch-checkout-40774283")).toEqual({ result: "SUCCEEDED", orderId: "itch-checkout-40774283" });
+    expect(parseHandoffSignal("SUCCEEDED ==abc")).toBeNull();
+    expect(parseHandoffSignal("SUCCEEDED +abc")).toBeNull();
+    expect(parseHandoffSignal("SUCCEEDED abc;rm -rf")).toBeNull();
+    expect(parseHandoffSignal("SUCCEEDED <script>")).toBeNull();
+    expect(parseHandoffSignal(`SUCCEEDED A${"a".repeat(128)}`)).toBeNull();
+  });
 });
 
 describe("pnpm airi:buy (runAiriBuy) with the manual handoff", () => {

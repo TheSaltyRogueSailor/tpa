@@ -56,7 +56,12 @@ export function credentialLast4(file: string): string | null {
 }
 
 export type HandoffSignal = { result: AiriTransactionResult; orderId?: string; reason?: string };
-const ORDER_ID = /^[A-Za-z0-9][A-Za-z0-9 _.:#/-]{0,127}$/;
+/**
+ * Merchant order / receipt id. Gumroad sale ids are base64 and end in `=` padding (real Oct 31 order
+ * `GF3w8ZC9AGDoa-PPkrHiQA==`), and standard base64 also uses `+`, so both are allowed after the first character.
+ * The old class had neither, so a correctly pasted Gumroad id was rejected and the operator had to strip the padding.
+ */
+const ORDER_ID = /^[A-Za-z0-9][A-Za-z0-9 _.:#/+=-]{0,127}$/;
 const REASON = /^[^\u0000-\u001f\u007f]{1,200}$/;
 /** Parse one signal (marker file body or stdin line). Returns null for anything that is not a complete, valid signal. */
 export function parseHandoffSignal(text: string): HandoffSignal | null {
