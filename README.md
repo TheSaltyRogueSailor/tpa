@@ -1,9 +1,19 @@
-# TPA: Triple Protection Authentication
+# TPA Shopper: an AI shopping agent that cannot spend without your passkey
 
-**Submission to the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/), Starter Kit 09 (Approval-Bound Shopping Agent).**
-Built by Raul A. Goodwin, Founder of Dingdong Platform, LLC (18-year Navy career, Special Operations Corpsman (SOCM)).
+**Problem:** an AI agent holding your card can overspend, or be tricked into paying the wrong merchant or the wrong amount.
 
-**Demo video (4:45):** [Watch the walkthrough](https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4), which covers the TPA commercial, the red-team attack demo, and two real purchases with Airwallex Airi, each approved by passkey. Also on the [hackathon-v1 release](https://github.com/TheSaltyRogueSailor/tpa/releases/tag/hackathon-v1).
+**Solution:** TPA Shopper cannot spend a cent until you approve the exact cart with your passkey. It pays through Airwallex Airi, signs every merchant request with the Visa Trusted Agent Protocol, runs a live demo on Metal testnet, and keeps an audit ledger of every approval.
+
+**Demo video (4:45):** [Watch the walkthrough](https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4) (TPA commercial, red-team attack demo, and two real Airi purchases, each approved by passkey). Also on the [hackathon-v1 release](https://github.com/TheSaltyRogueSailor/tpa/releases/tag/hackathon-v1).
+
+**What's proven:**
+
+- **337 of 337 library tests pass** (24 files, including the MySQL suites on a throwaway database), plus 20 of 20 ledger contract tests.
+- **Two real purchases through Airwallex Airi** (Gumroad and itch.io, Oct 31, 2026), each with a one-time card and the owner's passkey approval.
+- **Live USDZ payment on Metal testnet** (Nov 3, 2026): a $12.49 cart paid after all three protections, with 5 attacks blocked in the same run ([tx](https://testnet.metalntwx.com/tx/0x12f8141681a020695e7cfcea1266ce4682cc25b69bcc7877c14fbbdb8decc1cc)).
+- **Changed terms are refused:** if the merchant, an item, a price, shipping, tax or the total changes after approval, payment is blocked, and each approval works only once.
+
+Submission to the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/), Starter Kit 09 (Approval-Bound Shopping Agent). TPA (Triple Protection Authentication) is a subsidiary of Dingdong Platform, LLC, built by founder Raul A. Goodwin (18-year Navy career, Special Operations Corpsman (SOCM)).
 
 ## For judges: start here
 
@@ -127,6 +137,12 @@ What the TPA Shopper demo shows:
 - The demo merchant is local. The two real purchases used a manual checkout handoff (`shopper/handoff.ts`): an operator filled the merchant form from the one-time card file and signaled `SUCCEEDED <order id>`; the code never drives a browser or reads the card.
 - The Visa key directory is a local stand-in for Visa's key service; Visa ID tokens need Visa Intelligent Commerce onboarding.
 - TPA is an authorization layer. It holds no funds and is not a bank or payment processor.
+
+### What's next
+
+- **Rootstock audit ledger on-chain (planned):** `TPALedger` is built for Rootstock and tested locally; deploying it to Rootstock testnet and recording every consumed mandate there is the next milestone. It is not deployed today.
+- **Deeper Visa Trusted Agent Protocol support:** replace the local key directory stand-in with Visa's key service and add Visa ID tokens through Visa Intelligent Commerce onboarding.
+- **More merchants and kits:** bring the same three protections to more merchants and more hackathon starter kits, beyond the current manual checkout handoff.
 
 ---
 
