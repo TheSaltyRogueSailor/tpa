@@ -208,7 +208,7 @@ const DATA = /*__TPA_DEMO_DATA__*/null;
     <div class="big" style="margin-top:18px"><span class="g">${s.allowed} legit checkout allowed.</span><br><span class="r">${s.blocked} attacks blocked across ${s.attackTypes} attack types.</span></div>
     <div class="types">${groupsAttack.map(g => esc(GROUPS[g] || g)).join("  ·  ")}</div>
     <h2 style="margin-top:34px;color:#fff">TPA: Triple Protection Authentication</h2>
-    <div class="ft">Generated from a local, in-memory run of the real TPA service (pnpm demo) on ${esc(DATA.generatedAt.slice(0, 10))}. Pilot scope: TPA authorizes checkouts; it does not move money.</div>`;
+    <div class="ft">Generated from a local, in-memory run of the real TPA service (pnpm demo) on ${esc(DATA.generatedAt.slice(0, 10))}. Pilot scope: TPA authorizes checkouts; it does not move money. Security dashboard: examples/security-dashboard.html on the TPA host.</div>`;
 
   /* --------------------------- per-case content --------------------------- */
   const sameSkus = co => co.items.length === approved.items.length && co.items.every((it, i) => it.sku === approved.items[i].sku);

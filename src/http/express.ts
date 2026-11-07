@@ -35,6 +35,7 @@ export function createTpaExpressRouter(service: TpaService, resolveAuthenticated
 
   router.get("/status", respond(async request => service.status(await context(request))));
   router.get("/audit", respond(async request => service.auditLog(await context(request), { intentId: typeof request.query.intentId === "string" ? request.query.intentId : undefined })));
+  router.get("/dashboard", respond(async request => service.securityDashboard(await context(request), { limit: auditLimit(request.query.limit) })));
   router.post("/registration/options", respond(async request => service.registrationOptions(await context(request), request.body)));
   router.post("/registration/verify", respond(async request => service.registrationVerify(await context(request), request.body)));
   router.post("/intents", respond(async request => service.createIntent(await context(request), request.body)));
@@ -46,6 +47,14 @@ export function createTpaExpressRouter(service: TpaService, resolveAuthenticated
   router.use((_request, response) => response.status(404).json({ error: "Unknown TPA endpoint." }));
   router.use(tpaJsonErrorHandler);
   return router;
+}
+
+function auditLimit(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,2}$/.test(value)) throw new TpaServiceError("invalid", "Audit limit must be an integer from 1 to 500.");
+  const limit = Number(value);
+  if (limit > 500) throw new TpaServiceError("invalid", "Audit limit must be an integer from 1 to 500.");
+  return limit;
 }
 
 function sendError(response: Response, error: unknown): void {

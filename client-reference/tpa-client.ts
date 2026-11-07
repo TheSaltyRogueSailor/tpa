@@ -1,4 +1,5 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import type { SecurityDashboard } from "../src/dashboard.js";
 import { assertFreshTpaReview, type TpaReviewIntent } from "../src/review.js";
 import type { TpaCheckoutInput, TpaCheckoutIntentInput, TpaTransferInput } from "../src/domain.js";
 
@@ -27,6 +28,8 @@ export function createTpaClient(baseUrl = "/tpa-api") {
 
   return {
     status: () => call<{ intents: TpaReviewIntent[]; credentials: unknown[]; enabled: boolean }>("/status"),
+    /** Live security counts from the owner audit log. Missing sources stay unrecorded. */
+    dashboard: () => call<SecurityDashboard>("/dashboard"),
     /** Checkout mandate (merchant, items, shipping, tax, total). Legacy transfer input only if the server allows it. */
     createIntent: (input: TpaCheckoutIntentInput | (TpaTransferInput & { consent: true })) => call<TpaReviewIntent>("/intents", input),
     async register(label: string) {
