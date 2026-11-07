@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { createMinimalOwnerAdapter, createTpaAuthority, createTpaExpressRouter, createTpaMySqlConnection, createTpaEvidenceStore, createTpaService, createTpaStore, tpaMandateSignerFromEnv, type TpaAuthenticatedOwner } from "../src/index.js";
 
@@ -31,5 +34,17 @@ export function createReferenceTpaApp(resolveHostSession: (request: express.Requ
   app.disable("x-powered-by");
   // This includes its own bounded JSON parser and generic parser-error handler.
   app.use("/tpa-api", createTpaExpressRouter(service, resolveHostSession));
+  app.get("/dashboard", (_request, response) => {
+    const page = securityDashboardHtml();
+    response.set({ "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" });
+    if (!page) return response.status(404).type("text/plain").send("Security dashboard page is missing.");
+    response.type("html").send(page);
+  });
   return { app, close: () => connection.close() };
+}
+
+function securityDashboardHtml(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const path = [join(here, "security-dashboard.html"), join(here, "../examples/security-dashboard.html"), join(here, "../../examples/security-dashboard.html")].find(candidate => existsSync(candidate));
+  return path ? readFileSync(path, "utf8") : undefined;
 }

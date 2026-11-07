@@ -13,7 +13,7 @@ table{width:100%;border-collapse:collapse;font-family:ui-monospace,Menlo,monospa
 tr.refused td:nth-child(4){color:#ff7b72}tr.approved td:nth-child(4){color:#3fb950}.foot{color:#8b949e;font-size:12px;margin-top:24px}
 </style></head><body>
 <h1>TPA: Triple Protection Authentication</h1>
-<div class="sub">Red-team demo: one legit AI-agent checkout, then five attack types. Generated 2026-10-24T17:38:56.309Z from a local, in-memory run of the real TPA service.</div>
+<div class="sub">Red-team demo: one legit AI-agent checkout, then five attack types. Generated 2026-10-24T17:38:56.309Z from a local, in-memory run of the real TPA service. <a href="security-dashboard.html">Security dashboard</a>.</div>
 <div class="pillars"><div><b>1. Signed mandate</b><br>The server signs the exact checkout: merchant, items, shipping, tax, total.</div><div><b>2. Passkey approval</b><br>The owner approves that exact mandate with a passkey.</div><div><b>3. Exact match, once</b><br>At payment time the checkout must match, and the approval works once.</div></div>
 <div class="case ok"><div class="badge">ALLOWED</div><div><div class="grp">Case 0</div><h3>Agent checks out the exact cart the owner approved</h3><p>Agent shops, server signs the mandate, owner approves with passkey, merchant charges the same cart.</p><p class="code">result: <b>ALLOWED</b> <span>(checkout matched the signed, passkey-approved mandate)</span></p></div></div>
 <div class="case no"><div class="badge">BLOCKED</div><div><div class="grp">Attack 1</div><h3>Swapped merchant</h3><p>Owner approved Acme Store; the checkout that shows up is from Evil Store.</p><p class="code">reason code: <b>terms_changed:merchant_mismatch</b> <span>(a different store than the one the owner approved)</span></p></div></div>
@@ -66,5 +66,5 @@ tr.refused td:nth-child(4){color:#ff7b72}tr.approved td:nth-child(4){color:#3fb9
 <tr class="attempt"><td>33</td><td>17:44:06</td><td>consume</td><td>attempt</td><td>pending</td><td>7f583984</td><td>5fbb1158dd</td><td>tpa-demo-key-1</td></tr>
 <tr class="refused"><td>34</td><td>17:44:06</td><td>consume</td><td>refused</td><td>intent</td><td>7f583984</td><td>-</td><td>-</td></tr>
 </table>
-<div class="foot">Pilot scope: TPA authorizes; it does not move money, contact a payment processor, or write to a blockchain. Run locally with <code>pnpm demo</code>.</div>
+<div class="foot">Pilot scope: TPA authorizes; it does not move money, contact a payment processor, or write to a blockchain. Run locally with <code>pnpm demo</code>. The <a href="security-dashboard.html">security dashboard</a> reads the live audit log on the TPA host.</div>
 </body></html>

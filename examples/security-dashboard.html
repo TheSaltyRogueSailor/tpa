@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>TPA Security Dashboard</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #e6edf3;
+    background-color: #070b11;
+    background-image:
+      radial-gradient(900px 480px at 8% -10%, #143024 0%, transparent 58%),
+      radial-gradient(640px 380px at 100% 0%, #3a1218 0%, transparent 46%),
+      linear-gradient(#121a24 1px, transparent 1px),
+      linear-gradient(90deg, #121a24 1px, transparent 1px);
+    background-size: auto, auto, 56px 56px, 56px 56px;
+    background-attachment: fixed;
+  }
+  a { color: #7ee0a0; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 22px 48px; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+  header h1 { margin: 0; font-size: 28px; letter-spacing: .01em; }
+  header h1 span { color: #8b98a8; font-weight: 560; font-size: 16px; margin-left: 8px; }
+  header .sub { margin: 4px 0 0; color: #9fb0c3; font-size: 14px; }
+  .live {
+    margin-left: auto; display: flex; align-items: center; gap: 8px;
+    background: #0d141d; border: 1px solid #1f2a37; border-radius: 999px; padding: 8px 12px;
+    font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #c9d1d9;
+  }
+  .bell { transform-origin: 50% 8%; }
+  .live.on .bell { animation: ring 2.8s ease-in-out infinite; }
+  @keyframes ring {
+    0%, 72%, 100% { transform: rotate(0); }
+    78% { transform: rotate(12deg); }
+    86% { transform: rotate(-10deg); }
+    94% { transform: rotate(6deg); }
+  }
+  .banner {
+    background: #101820; border: 1px solid #243140; border-left: 4px solid #e5484d;
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; color: #d5dde6; font-size: 14px;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile { background: #0d141de6; border: 1px solid #1f2a37; border-radius: 14px; padding: 14px 16px 16px; min-height: 124px; }
+  .tile .k { font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: #8b98a8; }
+  .tile .v { margin-top: 10px; font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .tile .v.good { color: #3fb950; }
+  .tile .v.bad { color: #ff7b72; }
+  .tile .v.blank { font-size: 20px; color: #9fb0c3; }
+  .tile .n { margin-top: 8px; color: #8b98a8; font-size: 13px; line-height: 1.35; }
+  .layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 14px; }
+  .panel { background: #0d141de6; border: 1px solid #1f2a37; border-radius: 14px; overflow: hidden; min-height: 280px; }
+  .panel h2 { margin: 0; padding: 14px 16px; font-size: 15px; border-bottom: 1px solid #1f2a37; display: flex; align-items: baseline; gap: 8px; }
+  .panel h2 span { margin-left: auto; color: #8b98a8; font-size: 12px; font-weight: 600; }
+  .feed { display: flex; flex-direction: column; gap: 8px; padding: 12px; max-height: 640px; overflow: auto; }
+  .row {
+    border: 1px solid #1c2734; background: #121b26; border-radius: 10px; padding: 8px 10px;
+    display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; align-items: center;
+  }
+  .row.blocked { border-color: #e5484d66; background: #2a1518; }
+  .row.passed { border-color: #2ea04366; background: #102218; }
+  .row.fresh { box-shadow: 0 0 0 1px #e5484d88; }
+  .row .when, .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  .row .when { color: #8b98a8; font-size: 11px; }
+  .row .title { font-weight: 750; font-size: 14px; }
+  .row .detail { color: #9fb0c3; font-size: 12px; margin-top: 2px; }
+  .pill { font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding: 3px 7px; border-radius: 6px; }
+  .pill.passed { background: #2ea04333; color: #3fb950; }
+  .pill.blocked { background: #e5484d33; color: #ff7b72; }
+  .pill.pending, .pill.info { background: #30363d; color: #9fb0c3; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #1c2734; vertical-align: top; }
+  th { color: #8b98a8; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 750; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.blocked td.result { color: #ff7b72; font-weight: 800; }
+  tr.passed td.result { color: #3fb950; font-weight: 800; }
+  .empty { color: #8b98a8; padding: 22px 16px; font-size: 14px; }
+  .note { color: #8b98a8; font-size: 12px; padding: 0 16px 14px; }
+  footer { margin-top: 22px; color: #8b98a8; font-size: 12px; line-height: 1.5; }
+  footer nav { display: flex; gap: 14px; margin-bottom: 8px; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    header { flex-wrap: wrap; }
+    header h1 span { display: block; margin-left: 0; margin-top: 2px; }
+    .live { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg width="42" height="48" viewBox="0 0 34 38" aria-hidden="true">
+      <path d="M15 2 L28 7 V17 C28 26 22 32 15 35 C8 32 2 26 2 17 V7 Z" fill="#2ea043"/>
+      <path d="M15 5 L25 9 V17 C25 24 20.5 29 15 31.5 Z" fill="#3fb950" opacity=".55"/>
+      <path d="M9 18 L13.5 22.5 L21.5 13.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M27 3 C24 3 22.6 5.4 22.6 8 V11 L21 13 H33 L31.4 11 V8 C31.4 5.4 30 3 27 3 Z" fill="#e5484d" stroke="#0a1018" stroke-width="1.2"/>
+      <circle cx="27" cy="14.6" r="1.6" fill="#e5484d"/>
+    </svg>
+    <div>
+      <h1>TPA Security<span>Triple Protection Authentication</span></h1>
+      <p class="sub">Live agent-payment checks. Person, Presence, and Permission. No token prices and no trading.</p>
+    </div>
+    <div class="live" id="live">
+      <svg class="bell" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 1.2c-2.4 0-3.6 1.9-3.6 4.1V8L3 10.2h10L11.6 8V5.3C11.6 3.1 10.4 1.2 8 1.2z" fill="#e5484d"/>
+        <circle cx="8" cy="13.1" r="1.5" fill="#e5484d"/>
+      </svg>
+      <span id="live-label">Reading</span>
+    </div>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <section class="tiles" id="tiles" aria-label="Security stats"></section>
+  <div class="layout">
+    <section class="panel" aria-labelledby="feed-title">
+      <h2 id="feed-title">Recent checks <span id="feed-meta"></span></h2>
+      <div class="feed" id="feed" aria-live="polite"></div>
+    </section>
+    <section class="panel" aria-labelledby="pay-title">
+      <h2 id="pay-title">Agent payments <span id="pay-meta"></span></h2>
+      <div id="payments"></div>
+      <p class="note" id="pay-note"></p>
+    </section>
+  </div>
+  <footer>
+    <nav>
+      <a href="redteam-demo.html">Red-team report</a>
+      <a href="redteam-demo-animated.html">Animated demo</a>
+    </nav>
+    <p>Approvals are single use. A payment is blocked if the merchant, the items, a price, shipping, tax, or the total changes after approval. Figures come from the signed-in owner's audit log. This page does not invent counts.</p>
+  </footer>
+</div>
+<script>
+"use strict";
+(function () {
+  const POLL_MS = 3000;
+  const $ = id => document.getElementById(id);
+  const live = $("live");
+  const banner = $("banner");
+  let seen = new Set();
+  let loaded = false;
+  let timer = 0;
+
+  function node(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+  function showBanner(text) {
+    if (!text) { banner.hidden = true; banner.textContent = ""; return; }
+    banner.hidden = false;
+    banner.textContent = text;
+  }
+  function rateLabel(stat) {
+    if (!stat || stat.recorded !== true) return "Not recorded";
+    if (stat.passRate == null) return "No checks yet";
+    const pct = Math.round(stat.passRate * 1000) / 10;
+    return (Number.isInteger(pct) ? String(pct) : pct.toFixed(1)) + "%";
+  }
+  function countLabel(value, recorded) {
+    if (recorded !== true || value == null) return "Not recorded";
+    return String(value);
+  }
+  function tile(key, value, note, tone) {
+    const card = node("article", "tile");
+    card.appendChild(node("div", "k", key));
+    const blank = value === "Not recorded" || value === "No checks yet";
+    card.appendChild(node("div", "v" + (blank ? " blank" : tone ? " " + tone : ""), value));
+    card.appendChild(node("div", "n", note || ""));
+    return card;
+  }
+  function render(data) {
+    const checks = data.checks || {};
+    const pillars = data.pillars || {};
+    const safety = data.safety || {};
+    const tiles = $("tiles");
+    clear(tiles);
+    tiles.appendChild(tile("Checks passed", countLabel(checks.passed, checks.recorded), checks.note || "", "good"));
+    tiles.appendChild(tile("Checks blocked", countLabel(checks.blocked, checks.recorded), checks.recorded ? "Refused decisive checks in this audit window." : checks.note || "", "bad"));
+    tiles.appendChild(tile("Person pass rate", rateLabel(pillars.person), (pillars.person && pillars.person.note) || "", ""));
+    tiles.appendChild(tile("Presence pass rate", rateLabel(pillars.presence), (pillars.presence && pillars.presence.note) || "", ""));
+    tiles.appendChild(tile("Permission pass rate", rateLabel(pillars.permission), (pillars.permission && pillars.permission.note) || "", ""));
+    tiles.appendChild(tile("Rug pulls blocked", safety.rugPull && safety.rugPull.recorded ? String(safety.rugPull.blocked) : "Not recorded", (safety.rugPull && safety.rugPull.note) || "", "bad"));
+    tiles.appendChild(tile("Honeypots blocked", safety.honeypot && safety.honeypot.recorded ? String(safety.honeypot.blocked) : "Not recorded", (safety.honeypot && safety.honeypot.note) || "", "bad"));
+
+    const feed = $("feed");
+    const items = Array.isArray(data.feed) ? data.feed : [];
+    clear(feed);
+    $("feed-meta").textContent = data.feedTruncated ? "Newest " + items.length : (items.length ? items.length + " shown" : "");
+    if (!items.length) feed.appendChild(node("div", "empty", data.auditAvailable === false ? "The audit log is not configured on this host." : "No checks yet. New audit events show up here."));
+    const fresh = new Set();
+    items.forEach(item => {
+      const id = String(item.id);
+      const isNew = loaded && !seen.has(id);
+      if (isNew) fresh.add(id);
+      const row = node("div", "row " + (item.result || "info") + (isNew ? " fresh" : ""));
+      const when = node("div", "when", item.atUtc || "Unknown time");
+      const body = node("div");
+      const pillar = item.pillar === "record" ? "Audit" : (item.pillar || "Check");
+      body.appendChild(node("div", "title", pillar.charAt(0).toUpperCase() + pillar.slice(1) + " · " + (item.action || "event")));
+      body.appendChild(node("div", "detail", [item.merchantText, item.amountText, item.detail].filter(Boolean).join(" · ")));
+      row.append(when, body, node("span", "pill " + (item.result || "info"), item.resultLabel || "Recorded"));
+      feed.appendChild(row);
+    });
+    seen = new Set(items.map(item => String(item.id)));
+
+    const host = $("payments");
+    clear(host);
+    const payments = Array.isArray(data.payments) ? data.payments : [];
+    $("pay-meta").textContent = data.paymentsTruncated ? "Newest " + payments.length : (payments.length ? payments.length + " shown" : "");
+    $("pay-note").textContent = data.paymentNote || "";
+    if (!payments.length) {
+      host.appendChild(node("div", "empty", "No agent payments in the audit log."));
+    } else {
+      const table = node("table");
+      const head = node("thead");
+      const hr = node("tr");
+      ["Time", "Amount", "Merchant", "Result", "Reason"].forEach(label => hr.appendChild(node("th", label === "Amount" ? "num" : "", label)));
+      head.appendChild(hr);
+      const body = node("tbody");
+      payments.forEach(row => {
+        const tr = node("tr", row.result || "");
+        tr.appendChild(node("td", "mono", row.atUtc || "Unknown time"));
+        tr.appendChild(node("td", "num mono", row.amountText || "Unreadable"));
+        tr.appendChild(node("td", "", row.merchantText || "Not on mandate"));
+        tr.appendChild(node("td", "result", row.resultLabel || ""));
+        tr.appendChild(node("td", "", row.result === "blocked" ? (row.reasonText || row.reasonCode || "Blocked") : ""));
+        body.appendChild(tr);
+      });
+      table.append(head, body);
+      host.appendChild(table);
+    }
+    loaded = true;
+  }
+
+  function setLive(state, label) {
+    live.classList.toggle("on", state === "on");
+    $("live-label").textContent = label;
+  }
+
+  async function tick() {
+    try {
+      const response = await fetch("/tpa-api/dashboard", {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { accept: "application/json", "x-tpa-origin": location.origin },
+      });
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 401 || body.code === "unauthenticated") {
+        setLive("off", "Sign in");
+        showBanner("An owner session is required. This page only shows that owner's checks.");
+        if (!loaded) {
+          $("feed").replaceChildren(node("div", "empty", "Sign in to read the audit log."));
+          $("payments").replaceChildren(node("div", "empty", "No agent payments to show."));
+        }
+        return;
+      }
+      if (!response.ok) {
+        setLive("off", "Not connected");
+        showBanner(typeof body.error === "string" ? body.error : "Could not read the audit log.");
+        return;
+      }
+      render(body);
+      const when = typeof body.generatedAtMs === "number" ? new Date(body.generatedAtMs).toISOString().slice(11, 19) + " UTC" : "just now";
+      setLive("on", "Live " + when);
+      showBanner("");
+    } catch {
+      setLive("off", "Not connected");
+      showBanner("Could not reach the TPA audit API. Open this page from the TPA host.");
+      if (!loaded) {
+        $("feed").replaceChildren(node("div", "empty", "No live check feed until the audit API answers."));
+        $("payments").replaceChildren(node("div", "empty", "No agent payments to show."));
+      }
+    }
+  }
+
+  $("feed").appendChild(node("div", "empty", "Reading the audit log."));
+  $("payments").appendChild(node("div", "empty", "Reading the audit log."));
+  tick();
+  timer = setInterval(tick, POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { clearInterval(timer); timer = 0; }
+    else if (!timer) { tick(); timer = setInterval(tick, POLL_MS); }
+  });
+})();
+</script>
+</body>
+</html>

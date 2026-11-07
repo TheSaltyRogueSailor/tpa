@@ -9,6 +9,7 @@ import {
 import { TPA_QUOTE_ID, TPA_TARGET_RAILS, TpaBindingError, checkoutFingerprint, paymentTargetHash, tpaPaymentTargetSchema, type TpaPaymentTarget } from "./binding.js";
 import { tpaApprovalSummary } from "./approval.js";
 import { z } from "zod";
+import { buildSecurityDashboard, type DashboardIntent } from "./dashboard.js";
 import { TpaEvidenceError, deriveTpaMandateChallenge, type TpaEvidenceStore, type TpaStoredSignature } from "./evidence.js";
 import type { TpaMandateSigner } from "./signing.js";
 import type { TpaIntentPublic } from "./store.js";
@@ -613,6 +614,25 @@ export function createTpaService(input: CreateTpaServiceInput) {
       if (!evidence) return [];
       try { return await evidence.listAudit({ userId: owner.principalId, intentId: value.intentId, limit: value.limit }); }
       catch (error) { throw asServiceError(error); }
+    },
+
+    /**
+     * Owner-scoped security dashboard. Counts come from the audit log; merchant and amount come from
+     * intents still in the status window. Pillars with no stored result stay unrecorded (null), not zero.
+     */
+    async securityDashboard(context: TpaRequestContext, value: { limit?: number } = {}) {
+      const owner = requireOwner(context);
+      if (!evidence) return buildSecurityDashboard({ audit: [], intents: [], nowMs: now(), auditAvailable: false });
+      try {
+        const audit = await evidence.listAudit({ userId: owner.principalId, limit: value.limit ?? 500 });
+        const status = await input.store.tpaStatus(binding(owner));
+        const intents: DashboardIntent[] = status.intents.map(intent => {
+          const mandate = intent.mandate;
+          if (isCheckoutMandate(mandate)) return { id: intent.id, merchantName: mandate.merchant.name, amountBaseUnits: mandate.amountBaseUnits, currency: mandate.currency };
+          return { id: intent.id, merchantName: null, amountBaseUnits: mandate.amountBaseUnits, currency: mandate.currency };
+        });
+        return buildSecurityDashboard({ audit, intents, nowMs: now(), auditAvailable: true });
+      } catch (error) { throw asServiceError(error); }
     },
   };
 }

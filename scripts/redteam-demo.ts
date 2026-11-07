@@ -313,7 +313,7 @@ table{width:100%;border-collapse:collapse;font-family:ui-monospace,Menlo,monospa
 tr.refused td:nth-child(4){color:#ff7b72}tr.approved td:nth-child(4){color:#3fb950}.foot{color:#8b949e;font-size:12px;margin-top:24px}
 </style></head><body>
 <h1>TPA: Triple Protection Authentication</h1>
-<div class="sub">Red-team demo: one legit AI-agent checkout, then five attack types. Generated ${esc(meta.generatedAt)} from a local, in-memory run of the real TPA service.</div>
+<div class="sub">Red-team demo: one legit AI-agent checkout, then five attack types. Generated ${esc(meta.generatedAt)} from a local, in-memory run of the real TPA service. <a href="security-dashboard.html">Security dashboard</a>.</div>
 <div class="pillars"><div><b>1. Signed mandate</b><br>The server signs the exact checkout: merchant, items, shipping, tax, total.</div><div><b>2. Passkey approval</b><br>The owner approves that exact mandate with a passkey.</div><div><b>3. Exact match, once</b><br>At payment time the checkout must match, and the approval works once.</div></div>
 ${cards}
 <div class="summary"><span class="g">${meta.allowed} legit checkout allowed</span>, <span class="r">${meta.blocked} attacks blocked</span> across 5 attack types.</div>
@@ -322,7 +322,7 @@ ${cards}
 <table><tr><th>#</th><th>time (UTC)</th><th>action</th><th>outcome</th><th>reason code</th><th>intent</th><th>mandate</th><th>key id</th></tr>
 ${auditRows}
 </table>
-<div class="foot">Pilot scope: TPA authorizes; it does not move money, contact a payment processor, or write to a blockchain. Run locally with <code>pnpm demo</code>.</div>
+<div class="foot">Pilot scope: TPA authorizes; it does not move money, contact a payment processor, or write to a blockchain. Run locally with <code>pnpm demo</code>. The <a href="security-dashboard.html">security dashboard</a> reads the live audit log on the TPA host.</div>
 </body></html>
 `;
 }

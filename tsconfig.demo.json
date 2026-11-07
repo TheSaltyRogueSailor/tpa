@@ -10,6 +10,7 @@
     "src/**/*.ts",
     "tests/support/authenticator.ts",
     "scripts/redteam-demo.ts",
+    "scripts/dashboard-server.ts",
     "scripts/demo/**/*.ts",
     "scripts/shopper-demo.ts",
     "scripts/airi-preflight.ts",
