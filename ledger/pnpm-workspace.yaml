@@ -4,3 +4,7 @@ overrides:
   tmp: 0.2.7
   ws: 8.21.0
   serialize-javascript: 7.1.4
+  # Patched ranges for GHSA-mrwp-f3q8-3g9p, GHSA-3g3m-2fjr-6pw4, and GHSA-g3hv-75wg-m249.
+  follow-redirects: 1.16.2
+  glob: 14.0.4
+  minimatch: 11.0.5
