@@ -10,6 +10,7 @@ artifacts/
 cache/
 *.log
 .demo-build/
+.public-demo-build/
 
 # Key material (never commit signing keys or exported key files)
 *.pem

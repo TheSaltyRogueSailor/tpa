@@ -1,0 +1,13 @@
+# Render Blueprint for the public TPA demo. Do not add secret env vars.
+services:
+  - type: web
+    name: tpa-public-demo
+    runtime: node
+    plan: free
+    branch: lumi/public-demo
+    healthCheckPath: /healthz
+    buildCommand: corepack enable && corepack prepare pnpm@10.18.0 --activate && pnpm install --frozen-lockfile --ignore-scripts && pnpm exec tsc -p tsconfig.public-demo.json
+    startCommand: node .public-demo-build/public-demo/server.js
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>TPA Public Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #e6edf3;
+    background-color: #070b11;
+    background-image:
+      radial-gradient(900px 480px at 8% -10%, #143024 0%, transparent 58%),
+      radial-gradient(640px 380px at 100% 0%, #3a1218 0%, transparent 46%),
+      linear-gradient(#121a24 1px, transparent 1px),
+      linear-gradient(90deg, #121a24 1px, transparent 1px);
+    background-size: auto, auto, 56px 56px, 56px 56px;
+    background-attachment: fixed;
+  }
+  a { color: #7ee0a0; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 22px 56px; }
+  header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 18px; }
+  h1 { margin: 0; font-size: 32px; letter-spacing: .01em; }
+  .tag { margin: 4px 0 0; color: #d7efe0; font-weight: 700; }
+  .motto { margin: 2px 0 0; color: #ffb4ae; font-weight: 750; }
+  .sub { margin: 8px 0 0; color: #9fb0c3; max-width: 720px; line-height: 1.45; }
+  .pill {
+    margin-left: auto; display: flex; align-items: center; gap: 8px;
+    background: #0d141d; border: 1px solid #1f2a37; border-radius: 999px; padding: 8px 12px;
+    font-size: 12px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #ffb4ae;
+  }
+  .banner, .status {
+    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; line-height: 1.45;
+  }
+  .banner { background: #101820; border: 1px solid #243140; border-left: 4px solid #e5484d; }
+  .status { background: #101820; border: 1px solid #243140; color: #d5dde6; }
+  .landing { display: grid; grid-template-columns: 1.4fr .8fr; gap: 12px; margin-bottom: 14px; }
+  .card, .tile, .panel { background: #0d141de6; border: 1px solid #1f2a37; border-radius: 14px; }
+  .card { padding: 16px 18px; }
+  .card h2, .panel h2 { margin: 0 0 8px; font-size: 16px; }
+  .card p, .card li { color: #c9d1d9; line-height: 1.45; }
+  .card ul { margin: 8px 0 0; padding-left: 18px; }
+  .stack { display: grid; gap: 12px; }
+  .offer { font-size: 22px; font-weight: 800; color: #3fb950; margin: 8px 0 4px; }
+  .paid { margin: 0; color: #e6edf3; font-weight: 650; }
+  .cta {
+    display: inline-flex; align-items: center; margin-top: 10px; background: #e5484d; color: #fff;
+    text-decoration: none; font-weight: 800; border-radius: 10px; padding: 10px 14px;
+  }
+  .placeholder { margin: 8px 0 0; color: #9fb0c3; }
+  button {
+    background: #163524; color: #d7ffe6; border: 1px solid #2ea043; border-radius: 10px;
+    font-weight: 800; padding: 10px 14px; cursor: pointer;
+  }
+  button[disabled] { opacity: .6; cursor: wait; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip { background: #121b26; border: 1px solid #1f2a37; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #c9d1d9; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile { padding: 14px 16px 16px; min-height: 118px; }
+  .k { font-size: 11px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; color: #8b98a8; }
+  .v { margin-top: 10px; font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .v.good { color: #3fb950; } .v.bad { color: #ff7b72; } .v.blank { font-size: 20px; color: #9fb0c3; }
+  .n { margin-top: 8px; color: #8b98a8; font-size: 13px; line-height: 1.35; }
+  .layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 14px; }
+  .panel { overflow: hidden; min-height: 220px; }
+  .panel h2 { padding: 14px 16px; border-bottom: 1px solid #1f2a37; display: flex; gap: 8px; }
+  .panel h2 span { margin-left: auto; color: #8b98a8; font-size: 12px; font-weight: 600; }
+  .feed { display: flex; flex-direction: column; gap: 8px; padding: 12px; max-height: 560px; overflow: auto; }
+  .row { border: 1px solid #1c2734; background: #121b26; border-radius: 10px; padding: 8px 10px; display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; align-items: center; }
+  .row.blocked { border-color: #e5484d66; background: #2a1518; }
+  .row.passed { border-color: #2ea04366; background: #102218; }
+  .when, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .when { color: #8b98a8; font-size: 11px; }
+  .title { font-weight: 750; font-size: 14px; }
+  .detail { color: #9fb0c3; font-size: 12px; margin-top: 2px; }
+  .badge { font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; padding: 3px 7px; border-radius: 6px; }
+  .badge.passed { background: #2ea04333; color: #3fb950; }
+  .badge.blocked { background: #e5484d33; color: #ff7b72; }
+  .badge.pending, .badge.info { background: #30363d; color: #9fb0c3; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #1c2734; vertical-align: top; }
+  th { color: #8b98a8; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.blocked td.result { color: #ff7b72; font-weight: 800; }
+  tr.passed td.result { color: #3fb950; font-weight: 800; }
+  .empty, footer { color: #8b98a8; }
+  .empty { padding: 22px 16px; }
+  .note { color: #8b98a8; font-size: 12px; padding: 0 16px 14px; }
+  footer { margin-top: 22px; font-size: 12px; line-height: 1.5; }
+  @media (max-width: 900px) {
+    .landing, .layout { grid-template-columns: 1fr; }
+    header { flex-wrap: wrap; }
+    .pill { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg width="54" height="60" viewBox="0 0 64 72" role="img" aria-label="Green shield with a fingerprint and a checkmark, and a red bell">
+      <path d="M32 3 L58 14 V34 C58 52 48 62 32 69 C16 62 6 52 6 34 V14 Z" fill="#2ea043"/>
+      <path d="M32 9 L51 17 V34 C51 48 43 56 32 62 Z" fill="#3fb950" opacity=".45"/>
+      <g fill="none" stroke="#e7fff1" stroke-width="1.5" stroke-linecap="round">
+        <path d="M32 18 v6"/>
+        <path d="M28 19 c-2 2.4-2 6.2 0 9"/>
+        <path d="M36 19 c2 2.4 2 6.2 0 9"/>
+        <path d="M24.5 20.5 c-3 3.2-3.2 8 0 12"/>
+        <path d="M39.5 20.5 c3 3.2 3.2 8 0 12"/>
+      </g>
+      <path d="M22 44 L29 51 L44 34" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M50 4 c-3.2 0-4.8 2.6-4.8 5.4 V13 L43 15.4 h14 L55.2 13 V9.4 C55.2 6.6 53.2 4 50 4 Z" fill="#e5484d" stroke="#0a1018" stroke-width="1.1"/>
+      <circle cx="50" cy="17.6" r="1.7" fill="#e5484d"/>
+    </svg>
+    <div>
+      <h1>TPA</h1>
+      <p class="tag">Michael Moving Forward DingDong</p>
+      <p class="motto">The only easy day was yesterday!</p>
+      <p class="sub">Triple Protection Authentication for agent payments. Person, Presence, and Permission. No token prices and no trading.</p>
+    </div>
+    <div class="pill">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2c-2.4 0-3.6 1.9-3.6 4.1V8L3 10.2h10L11.6 8V5.3C11.6 3.1 10.4 1.2 8 1.2z" fill="#e5484d"/><circle cx="8" cy="13.1" r="1.5" fill="#e5484d"/></svg>
+      <span>Mock rail</span>
+    </div>
+  </header>
+  <div class="banner" id="rail-label">Mock payment rail, real executed security checks.</div>
+  <div class="status" id="status" hidden></div>
+  <section class="landing">
+    <article class="card">
+      <h2>What TPA is</h2>
+      <p>TPA sits between an agent and the money. A payment has to pass three checks:</p>
+      <ul>
+        <li><b>Person.</b> The owner approves with a passkey.</li>
+        <li><b>Presence.</b> The agent is a known signer right now.</li>
+        <li><b>Permission.</b> The cart matches exactly what was approved.</li>
+      </ul>
+      <p>Approvals are single use. If the merchant or a price changes after approval, the payment is blocked. TPA is built on Rootstock. This demo does not deploy a contract and does not move money.</p>
+    </article>
+    <div class="stack">
+      <article class="card">
+        <h2 id="video-title">Demo video</h2>
+        <div id="video"></div>
+      </article>
+      <article class="card">
+        <h2 id="pricing-title">Pricing</h2>
+        <p class="offer" id="free-pilot"></p>
+        <p class="paid" id="paid-plans"></p>
+      </article>
+      <article class="card" id="contact-card">
+        <h2>Get TPA</h2>
+        <div id="contact"></div>
+      </article>
+    </div>
+  </section>
+  <div class="actions">
+    <button type="button" id="run">Run demo</button>
+    <button type="button" id="startup">Show startup snapshot</button>
+  </div>
+  <div class="chips" id="scenarios"></div>
+  <section class="tiles" id="tiles" aria-label="Security stats"></section>
+  <div class="layout">
+    <section class="panel">
+      <h2>Recent checks <span id="feed-meta"></span></h2>
+      <div class="feed" id="feed" aria-live="polite"></div>
+    </section>
+    <section class="panel">
+      <h2>Agent payments <span id="pay-meta"></span></h2>
+      <div id="payments"></div>
+      <p class="note" id="pay-note"></p>
+    </section>
+  </div>
+  <footer>
+    <p>Startup numbers come from checks this process executed before it opened the port. Run demo repeats those checks in a sandbox and returns them only to this browser. Presence, rug-pull, and honeypot stay Not recorded unless a real result is stored. This page does not move money and does not call a card network or a chain.</p>
+  </footer>
+</div>
+<script>
+"use strict";
+(function () {
+  const $ = id => document.getElementById(id);
+  let viewing = "startup";
+  function node(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+  function rateLabel(stat) {
+    if (!stat || stat.recorded !== true) return "Not recorded";
+    if (stat.passRate == null) return "No checks yet";
+    const pct = Math.round(stat.passRate * 1000) / 10;
+    return (Number.isInteger(pct) ? String(pct) : pct.toFixed(1)) + "%";
+  }
+  function countLabel(value, recorded) {
+    if (recorded !== true || value == null) return "Not recorded";
+    return String(value);
+  }
+  function tile(key, value, note, tone) {
+    const card = node("article", "tile");
+    card.appendChild(node("div", "k", key));
+    const blank = value === "Not recorded" || value === "No checks yet";
+    card.appendChild(node("div", "v" + (blank ? " blank" : tone ? " " + tone : ""), value));
+    card.appendChild(node("div", "n", note || ""));
+    return card;
+  }
+  function renderDashboard(snapshot) {
+    const data = snapshot.dashboard || {};
+    const checks = data.checks || {};
+    const pillars = data.pillars || {};
+    const safety = data.safety || {};
+    const tiles = $("tiles");
+    clear(tiles);
+    tiles.appendChild(tile("Checks passed", countLabel(checks.passed, checks.recorded), checks.note || "", "good"));
+    tiles.appendChild(tile("Checks blocked", countLabel(checks.blocked, checks.recorded), checks.recorded ? "Refused decisive checks in this audit window." : checks.note || "", "bad"));
+    tiles.appendChild(tile("Person pass rate", rateLabel(pillars.person), (pillars.person && pillars.person.note) || ""));
+    tiles.appendChild(tile("Presence pass rate", rateLabel(pillars.presence), (pillars.presence && pillars.presence.note) || ""));
+    tiles.appendChild(tile("Permission pass rate", rateLabel(pillars.permission), (pillars.permission && pillars.permission.note) || ""));
+    tiles.appendChild(tile("Rug pulls blocked", safety.rugPull && safety.rugPull.recorded ? String(safety.rugPull.blocked) : "Not recorded", (safety.rugPull && safety.rugPull.note) || "", "bad"));
+    tiles.appendChild(tile("Honeypots blocked", safety.honeypot && safety.honeypot.recorded ? String(safety.honeypot.blocked) : "Not recorded", (safety.honeypot && safety.honeypot.note) || "", "bad"));
+    const feed = $("feed");
+    const items = Array.isArray(data.feed) ? data.feed : [];
+    clear(feed);
+    $("feed-meta").textContent = items.length ? String(items.length) + " shown" : "";
+    if (!items.length) feed.appendChild(node("div", "empty", "No checks yet."));
+    items.forEach(item => {
+      const row = node("div", "row " + (item.result || "info"));
+      const pillar = item.pillar === "record" ? "Audit" : (item.pillar || "Check");
+      const body = node("div");
+      body.appendChild(node("div", "title", pillar.charAt(0).toUpperCase() + pillar.slice(1) + " · " + (item.action || "event")));
+      body.appendChild(node("div", "detail", [item.merchantText, item.amountText, item.detail].filter(Boolean).join(" · ")));
+      row.append(node("div", "when", item.atUtc || "Unknown time"), body, node("span", "badge " + (item.result || "info"), item.resultLabel || "Recorded"));
+      feed.appendChild(row);
+    });
+    const host = $("payments");
+    clear(host);
+    const payments = Array.isArray(data.payments) ? data.payments : [];
+    $("pay-meta").textContent = payments.length ? String(payments.length) + " shown" : "";
+    $("pay-note").textContent = data.paymentNote || "";
+    if (!payments.length) host.appendChild(node("div", "empty", "No agent payments in this audit log."));
+    else {
+      const table = node("table");
+      const head = node("thead");
+      const hr = node("tr");
+      ["Time", "Amount", "Merchant", "Result", "Reason"].forEach(label => hr.appendChild(node("th", label === "Amount" ? "num" : "", label)));
+      head.appendChild(hr);
+      const body = node("tbody");
+      payments.forEach(row => {
+        const tr = node("tr", row.result || "");
+        tr.appendChild(node("td", "mono", row.atUtc || "Unknown time"));
+        tr.appendChild(node("td", "num mono", row.amountText || "Unreadable"));
+        tr.appendChild(node("td", "", row.merchantText || "Not on mandate"));
+        tr.appendChild(node("td", "result", row.resultLabel || ""));
+        tr.appendChild(node("td", "", row.result === "blocked" ? (row.reasonText || row.reasonCode || "Blocked") : ""));
+        body.appendChild(tr);
+      });
+      table.append(head, body);
+      host.appendChild(table);
+    }
+    const chips = $("scenarios");
+    clear(chips);
+    (snapshot.scenarios || []).forEach(name => chips.appendChild(node("span", "chip", name)));
+    if (snapshot.label) $("rail-label").textContent = snapshot.label;
+  }
+  function renderSite(site) {
+    const pricing = site.pricing || {};
+    $("pricing-title").textContent = pricing.title || "Pricing";
+    $("free-pilot").textContent = pricing.freePilot || "";
+    $("paid-plans").textContent = pricing.paidPlans || "";
+    const video = site.video || {};
+    $("video-title").textContent = video.title || "Demo video";
+    const videoHost = $("video");
+    clear(videoHost);
+    if (video.href) {
+      const link = node("a", "", video.title || "Demo video");
+      link.href = video.href;
+      link.rel = "noopener noreferrer";
+      link.target = "_blank";
+      videoHost.appendChild(link);
+    } else videoHost.appendChild(node("p", "placeholder", "Demo video link goes here."));
+    const contactHost = $("contact");
+    clear(contactHost);
+    const contact = site.contact;
+    $("contact-card").hidden = !contact || !contact.href;
+    if (contact && contact.href) {
+      const link = node("a", "cta", contact.label || "Get TPA");
+      link.href = contact.href;
+      link.rel = "noopener noreferrer";
+      link.target = "_blank";
+      contactHost.appendChild(link);
+    }
+  }
+  async function loadStartup() {
+    viewing = "startup";
+    const response = await fetch("/api/public-dashboard", { cache: "no-store" });
+    if (!response.ok) throw new Error("dashboard");
+    renderDashboard(await response.json());
+    $("status").hidden = true;
+  }
+  $("startup").addEventListener("click", () => { loadStartup().catch(() => { $("status").hidden = false; $("status").textContent = "Could not read the startup snapshot."; }); });
+  $("run").addEventListener("click", async () => {
+    $("run").disabled = true;
+    $("status").hidden = false;
+    $("status").textContent = "Running the checks in a sandbox.";
+    try {
+      const response = await fetch("/api/public-demo/run", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        $("status").textContent = typeof body.error === "string" ? body.error : "The demo run did not finish.";
+        return;
+      }
+      viewing = "sandbox";
+      renderDashboard(body);
+      $("status").textContent = "Showing your sandbox run. It is not saved on the server.";
+    } catch {
+      $("status").textContent = "Could not reach the demo runner.";
+    } finally {
+      $("run").disabled = false;
+    }
+  });
+  fetch("/api/public-site", { cache: "no-store" }).then(response => response.json()).then(renderSite).catch(() => {
+    $("paid-plans").textContent = "Pricing is not available.";
+  });
+  loadStartup().catch(() => {
+    $("feed").appendChild(node("div", "empty", "Reading the executed checks."));
+  });
+  setInterval(() => { if (viewing === "startup") loadStartup().catch(() => {}); }, 15000);
+})();
+</script>
+</body>
+</html>

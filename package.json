@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22 <23",
+    "pnpm": "10.18.0"
+  },
   "description": "Standalone WebAuthn-backed transfer-authorization pilot. Payment rails are mocked by default; real Metal testnet (USDZ) payments are optional behind METAL_LIVE=1.",
   "exports": {
     ".": {
@@ -29,6 +33,7 @@
     "demo:animated": "tsc -p tsconfig.demo.json && node .demo-build/scripts/redteam-demo.js --json examples/redteam-demo.json --animated examples/redteam-demo-animated.html",
     "demo:shopper": "tsc -p tsconfig.demo.json && node .demo-build/scripts/shopper-demo.js",
     "dashboard": "tsc -p tsconfig.demo.json && node .demo-build/scripts/dashboard-server.js",
+    "public-demo": "tsc -p tsconfig.public-demo.json && node .public-demo-build/public-demo/server.js",
     "airi:preflight": "tsc -p tsconfig.demo.json && node .demo-build/scripts/airi-preflight.js",
     "airi:buy": "tsc -p tsconfig.demo.json && node .demo-build/scripts/airi-buy.js",
     "demo:video": "pnpm demo:animated && node scripts/record-demo-video.mjs examples/redteam-demo-animated.html artifacts/tpa-demo.mp4"
