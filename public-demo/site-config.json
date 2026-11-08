@@ -1,0 +1,15 @@
+{
+  "pricing": {
+    "title": "Pricing",
+    "freePilot": "Free pilot",
+    "paidPlans": "Contact us for pricing"
+  },
+  "contact": {
+    "label": "DM @Saltymetax on X",
+    "href": "https://x.com/messages/compose?recipient_id=1957940007609724928"
+  },
+  "video": {
+    "title": "Demo video",
+    "href": ""
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "rootDir": ".",
+    "outDir": "./.public-demo-build"
+  },
+  "include": [
+    "src/**/*.ts",
+    "public-demo/**/*.ts",
+    "scripts/demo/memory-store.ts",
+    "tests/support/authenticator.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "ledger",
+    ".demo-build",
+    ".public-demo-build"
+  ]
+}

@@ -18,7 +18,8 @@
     "examples/**/*.ts",
     "tests/**/*.ts",
     "scripts/**/*.ts",
-    "shopper/**/*.ts"
+    "shopper/**/*.ts",
+    "public-demo/**/*.ts"
   ],
   "exclude": [
     "node_modules",

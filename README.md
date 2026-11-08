@@ -6,6 +6,8 @@
 
 **Demo video (4:45):** [Watch the walkthrough](https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4) (TPA commercial, red-team attack demo, and two real Airi purchases, each approved by passkey). Also on the [hackathon-v1 release](https://github.com/TheSaltyRogueSailor/tpa/releases/tag/hackathon-v1).
 
+**Live dashboard:** [https://tpa-public-demo.onrender.com/dashboard](https://tpa-public-demo.onrender.com/dashboard). This is the free Render host. The first open after it sleeps can take about a minute to wake up.
+
 **What's proven:**
 
 - **337 of 337 library tests pass** (24 files, including the MySQL suites on a throwaway database), plus 20 of 20 ledger contract tests.
@@ -22,6 +24,40 @@ Submission to the [Airwallex Agentic Banking Hackathon](https://airwallex.hacker
 AI agents can now shop and pay. TPA (Triple Protection Authentication) is the approval layer that sits between an agent and the money. The agent can plan a cart, but it cannot spend a cent until the owner approves those exact terms with a passkey, and the payment is refused if anything changes after the approval: the merchant, an item, a price, shipping, tax or the total. Each approval can be used once.
 
 TPA Shopper (`shopper/`) is the hackathon app built on it: a Kit 09 shopping agent that pays through Airwallex Airi (and, for the Metal Award, in USDZ on Metal testnet) only after all three protections pass.
+
+### Public demo on Render
+
+Judges can open a safe public copy of the security dashboard. It is a mock payment rail with real TPA checks. It is not a live Airwallex or Metal integration, it does not use MySQL, and it does not read secrets.
+
+Local run (Node.js 22, pnpm 10.18.0):
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm public-demo
+```
+
+Then open `http://127.0.0.1:4173/dashboard`. On Render the process binds `0.0.0.0` and uses the platform `PORT`. Health check: `/healthz`.
+
+What the page shows:
+
+- Person, Presence, and Permission, single-use approvals, and blocks when the merchant or a price changes. TPA is built on Rootstock. This demo does not deploy a contract.
+- A startup snapshot from checks the process actually ran: passkey approval, one allowed mock payment, a merchant swap, a price change, and a replay.
+- Presence, rug-pull, and honeypot stay **Not recorded** because this demo does not store those results.
+- Pricing from `public-demo/site-config.json`: Free pilot, and Contact us for pricing for paid plans.
+- Get TPA links to a DM to @Saltymetax on X. An empty `contact.href` hides the button.
+- The demo video slot stays a placeholder until `video.href` is an https URL.
+
+`Run demo` repeats the same checks in a per-request sandbox. The result is returned only to that browser. It does not replace the startup snapshot and it cannot authorize, consume, or read a private audit log. `METAL_LIVE`, `AIRI_LIVE`, a mandate signing key, a database URL, or a local `.env` / Metal wallet file makes the process refuse to start. The refusal does not print the value.
+
+Deploy on Render (Blueprint, do this yourself; nothing here creates a Render account):
+
+1. In the Render dashboard, choose **New**, then **Blueprint**.
+2. Connect the GitHub repo `TheSaltyRogueSailor/tpa` and select branch `lumi/public-demo`.
+3. Render reads `render.yaml`. The service name is `tpa-public-demo`. Node is pinned to 22. The build command installs with pnpm 10.18.0 and compiles `tsconfig.public-demo.json`. The start command is `node .public-demo-build/public-demo/server.js`. The health check path is `/healthz`.
+4. Do not add environment variables. Leave `METAL_LIVE` and `AIRI_LIVE` unset. Do not upload `.env`, wallet keys, or API credentials.
+5. Deploy. Open [https://tpa-public-demo.onrender.com/dashboard](https://tpa-public-demo.onrender.com/dashboard).
+
+The same build and start commands work if you create a Node web service by hand instead of a Blueprint. The live service stays on the free plan and deploys from branch `lumi/public-demo`. Free instances sleep when idle; the first open after sleep can take about a minute. The existing walkthrough video is linked at the top of this README. Paste an https URL into `public-demo/site-config.json` under `video.href` when you want that button on the page.
 
 ### The three protections
 
