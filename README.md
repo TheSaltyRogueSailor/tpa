@@ -6,6 +6,8 @@
 
 **Demo video (4:45):** [Watch the walkthrough](https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4) (TPA commercial, red-team attack demo, and two real Airi purchases, each approved by passkey). Also on the [hackathon-v1 release](https://github.com/TheSaltyRogueSailor/tpa/releases/tag/hackathon-v1).
 
+**Live dashboard:** [https://tpa-public-demo.onrender.com/dashboard](https://tpa-public-demo.onrender.com/dashboard). This is the free Render host. The first open after it sleeps can take about a minute to wake up.
+
 **What's proven:**
 
 - **337 of 337 library tests pass** (24 files, including the MySQL suites on a throwaway database), plus 20 of 20 ledger contract tests.
@@ -53,9 +55,9 @@ Deploy on Render (Blueprint, do this yourself; nothing here creates a Render acc
 2. Connect the GitHub repo `TheSaltyRogueSailor/tpa` and select branch `lumi/public-demo`.
 3. Render reads `render.yaml`. The service name is `tpa-public-demo`. Node is pinned to 22. The build command installs with pnpm 10.18.0 and compiles `tsconfig.public-demo.json`. The start command is `node .public-demo-build/public-demo/server.js`. The health check path is `/healthz`.
 4. Do not add environment variables. Leave `METAL_LIVE` and `AIRI_LIVE` unset. Do not upload `.env`, wallet keys, or API credentials.
-5. Deploy. Open `https://<service-name>.onrender.com/dashboard`.
+5. Deploy. Open [https://tpa-public-demo.onrender.com/dashboard](https://tpa-public-demo.onrender.com/dashboard).
 
-The same build and start commands work if you create a Node web service by hand instead of a Blueprint. Free instances sleep when idle; the first open after sleep can take a minute. The existing walkthrough video is linked at the top of this README. Paste an https URL into `public-demo/site-config.json` under `video.href` when you want that button on the page.
+The same build and start commands work if you create a Node web service by hand instead of a Blueprint. The live service stays on the free plan and deploys from branch `lumi/public-demo`. Free instances sleep when idle; the first open after sleep can take about a minute. The existing walkthrough video is linked at the top of this README. Paste an https URL into `public-demo/site-config.json` under `video.href` when you want that button on the page.
 
 ### The three protections
 
