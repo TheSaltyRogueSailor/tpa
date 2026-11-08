@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createTpaAuthority } from "../src/config.js";
 import { isCheckoutMandate, type TpaCheckoutInput } from "../src/domain.js";
-import { buildSecurityDashboard, type DashboardIntent, type SecurityDashboard } from "../src/dashboard.js";
+import { buildSecurityDashboard, type DashboardFeedItem, type DashboardIntent, type DashboardPaymentRow, type SecurityDashboard } from "../src/dashboard.js";
 import { TpaServiceError, createTpaService } from "../src/service.js";
 import { createTpaMandateSigner } from "../src/signing.js";
 import type { TpaIntentPublic } from "../src/store.js";
@@ -22,6 +22,17 @@ export const PUBLIC_DEMO_SCENARIOS = [
 ] as const;
 
 export type PublicDemoSource = "startup" | "sandbox";
+export type ReplayStep = {
+  title: string;
+  result: "passed" | "blocked";
+  badge: "PASSED" | "BLOCKED";
+  reason: string;
+  detail: string;
+  /** How many real decisive passes this step adds. Taken from the audit summary, not guessed. */
+  passedDelta: number;
+  blockedDelta: number;
+};
+export type ReplayPlan = { steps: ReplayStep[]; finish: string };
 export type PublicDemoSnapshot = {
   mode: "public-demo";
   rail: "mock";
@@ -30,7 +41,73 @@ export type PublicDemoSnapshot = {
   source: PublicDemoSource;
   scenarios: readonly string[];
   dashboard: SecurityDashboard;
+  replay: ReplayPlan;
 };
+
+function joinDetail(parts: Array<string | null | undefined>): string {
+  return parts.filter(part => typeof part === "string" && part.length > 0).join(" · ");
+}
+
+function blockedStep(title: string, row: DashboardPaymentRow): ReplayStep {
+  return {
+    title,
+    result: "blocked",
+    badge: "BLOCKED",
+    reason: row.reasonText || row.reasonCode || "Blocked",
+    detail: joinDetail([row.merchantText, row.amountText, row.reasonText || row.reasonCode]),
+    passedDelta: 0,
+    blockedDelta: 1,
+  };
+}
+
+/** Ordered playback of the five demo checks, using only rows present in this run. */
+export function buildReplay(dashboard: SecurityDashboard): ReplayPlan {
+  const payments = dashboard.payments;
+  const feed = dashboard.feed;
+  const steps: ReplayStep[] = [];
+  const personPass = feed.find(item => item.action === "authorized" && item.result === "passed");
+  const personBlock = feed.find(item => item.action === "authorize" && item.result === "blocked");
+  const person = dashboard.pillars.person;
+  if (person.recorded && (personPass || personBlock)) {
+    const shown: DashboardFeedItem = personPass ?? personBlock!;
+    const passed = person.passed ?? 0;
+    const blocked = person.blocked ?? 0;
+    const ok = passed > 0;
+    steps.push({
+      title: "Passkey approval",
+      result: ok ? "passed" : "blocked",
+      badge: ok ? "PASSED" : "BLOCKED",
+      reason: ok ? (shown.detail || "Allowed") : (shown.detail || "Blocked"),
+      detail: joinDetail([shown.merchantText, shown.amountText, shown.detail]),
+      passedDelta: passed,
+      blockedDelta: blocked,
+    });
+  }
+  const allowed = payments.find(row => row.result === "passed");
+  if (allowed && dashboard.pillars.permission.recorded) {
+    steps.push({
+      title: "Allowed mock payment",
+      result: "passed",
+      badge: "PASSED",
+      reason: "Allowed",
+      detail: joinDetail([allowed.merchantText, allowed.amountText, "Allowed"]),
+      passedDelta: dashboard.pillars.permission.passed ?? 0,
+      blockedDelta: 0,
+    });
+  }
+  const merchant = payments.find(row => row.reasonCode === "terms_changed:merchant_mismatch");
+  const price = payments.find(row => row.reasonCode === "terms_changed:items_mismatch");
+  const replay = payments.find(row => row.reasonCode === "intent");
+  if (merchant) steps.push(blockedStep("Merchant swap blocked", merchant));
+  if (price) steps.push(blockedStep("Price change blocked", price));
+  if (replay) steps.push(blockedStep("Replay blocked", replay));
+  const passed = dashboard.checks.passed;
+  const blocked = dashboard.checks.blocked;
+  const finish = passed == null || blocked == null
+    ? "Done. Every check ran just now in a sandbox."
+    : `Done: ${passed} passed, ${blocked} blocked. Every check ran just now in a sandbox.`;
+  return { steps, finish };
+}
 
 const checkout: TpaCheckoutInput = {
   currency: "USD",
@@ -132,5 +209,6 @@ export async function runPublicDemo(source: PublicDemoSource): Promise<PublicDem
     source,
     scenarios: PUBLIC_DEMO_SCENARIOS,
     dashboard,
+    replay: buildReplay(dashboard),
   };
 }

@@ -7,12 +7,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildSecurityDashboard } from "../src/dashboard.js";
 import { createPublicDemoApp } from "../public-demo/app.js";
 import { PublicDemoError, assertPublicDemoHost, contactLink, loadSiteConfig, operatorMessage, resolveListen } from "../public-demo/config.js";
-import { PUBLIC_DEMO_LABEL, type PublicDemoSnapshot } from "../public-demo/run-demo.js";
+import { PUBLIC_DEMO_LABEL, buildReplay, type PublicDemoSnapshot } from "../public-demo/run-demo.js";
 
 const page = readFileSync(new URL("../public-demo/public.html", import.meta.url), "utf8");
 const cleanDir = mkdtempSync(join(tmpdir(), "tpa-public-demo-"));
 
 function stubSnapshot(source: "startup" | "sandbox"): PublicDemoSnapshot {
+  const dashboard = buildSecurityDashboard({ audit: [], intents: [], nowMs: source === "startup" ? 10 : 99, auditAvailable: true });
   return {
     mode: "public-demo",
     rail: "mock",
@@ -20,7 +21,8 @@ function stubSnapshot(source: "startup" | "sandbox"): PublicDemoSnapshot {
     livePayments: false,
     source,
     scenarios: ["Passkey approval"],
-    dashboard: buildSecurityDashboard({ audit: [], intents: [], nowMs: source === "startup" ? 10 : 99, auditAvailable: true }),
+    dashboard,
+    replay: buildReplay(dashboard),
   };
 }
 
@@ -82,6 +84,11 @@ describe("public demo page", () => {
     expect(page).toContain('fill="#e5484d"');
     expect(page).toContain("/api/public-dashboard");
     expect(page).toContain("/api/public-demo/run");
+    expect(page).toContain("Running...");
+    expect(page).toContain("Every check ran just now in a sandbox.");
+    expect(page).toContain("Try again");
+    expect(page).toContain("min-height: 48px");
+    expect(page).toContain("stepDelay");
     expect(page).toContain("Demo video link goes here.");
     expect(page).not.toContain("/tpa-api");
     expect(page).not.toMatch(/[\u2013\u2014]/);
@@ -145,6 +152,18 @@ describe("public demo HTTP", () => {
     expect(run.status).toBe(200);
     const sandbox = await run.json();
     expect(sandbox.source).toBe("sandbox");
+    expect(sandbox.replay.steps.map((step: { title: string; badge: string }) => [step.title, step.badge])).toEqual([
+      ["Passkey approval", "PASSED"],
+      ["Allowed mock payment", "PASSED"],
+      ["Merchant swap blocked", "BLOCKED"],
+      ["Price change blocked", "BLOCKED"],
+      ["Replay blocked", "BLOCKED"],
+    ]);
+    expect(sandbox.replay.finish).toBe("Done: 4 passed, 3 blocked. Every check ran just now in a sandbox.");
+    const passed = sandbox.replay.steps.reduce((sum: number, step: { passedDelta: number }) => sum + step.passedDelta, 0);
+    const blocked = sandbox.replay.steps.reduce((sum: number, step: { blockedDelta: number }) => sum + step.blockedDelta, 0);
+    expect(passed).toBe(4);
+    expect(blocked).toBe(3);
     expect(sandbox.dashboard.payments.some((row: { reasonCode: string | null }) => row.reasonCode === "terms_changed:merchant_mismatch")).toBe(true);
     const after = await (await fetch(`${base}/api/public-dashboard`)).json();
     expect(after.dashboard.generatedAtMs).toBe(before.dashboard.generatedAtMs);

@@ -33,10 +33,15 @@
     font-size: 12px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #ffb4ae;
   }
   .banner, .status {
-    border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; line-height: 1.45;
+    border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; line-height: 1.45;
   }
   .banner { background: #101820; border: 1px solid #243140; border-left: 4px solid #e5484d; }
-  .status { background: #101820; border: 1px solid #243140; color: #d5dde6; }
+  .status {
+    background: #101820; border: 1px solid #3fb950; border-left: 4px solid #3fb950;
+    color: #e6edf3; font-size: 18px; font-weight: 800;
+  }
+  .status.error { background: #2a1518; border-color: #e5484d; color: #ffd7d4; }
+  .status.done { background: #102218; border-color: #3fb950; color: #d7ffe6; font-size: 20px; }
   .landing { display: grid; grid-template-columns: 1.4fr .8fr; gap: 12px; margin-bottom: 14px; }
   .card, .tile, .panel { background: #0d141de6; border: 1px solid #1f2a37; border-radius: 14px; }
   .card { padding: 16px 18px; }
@@ -47,16 +52,16 @@
   .offer { font-size: 22px; font-weight: 800; color: #3fb950; margin: 8px 0 4px; }
   .paid { margin: 0; color: #e6edf3; font-weight: 650; }
   .cta {
-    display: inline-flex; align-items: center; margin-top: 10px; background: #e5484d; color: #fff;
-    text-decoration: none; font-weight: 800; border-radius: 10px; padding: 10px 14px;
+    display: inline-flex; align-items: center; justify-content: center; margin-top: 10px; background: #e5484d; color: #fff;
+    text-decoration: none; font-weight: 800; border-radius: 10px; padding: 12px 16px; min-height: 48px;
   }
   .placeholder { margin: 8px 0 0; color: #9fb0c3; }
   button {
     background: #163524; color: #d7ffe6; border: 1px solid #2ea043; border-radius: 10px;
-    font-weight: 800; padding: 10px 14px; cursor: pointer;
+    font-weight: 800; font-size: 17px; padding: 12px 18px; min-height: 48px; cursor: pointer;
   }
-  button[disabled] { opacity: .6; cursor: wait; }
-  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0 14px; }
+  button[disabled] { opacity: .7; cursor: wait; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 14px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .chip { background: #121b26; border: 1px solid #1f2a37; border-radius: 999px; padding: 4px 10px; font-size: 12px; color: #c9d1d9; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -73,6 +78,9 @@
   .row { border: 1px solid #1c2734; background: #121b26; border-radius: 10px; padding: 8px 10px; display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; align-items: center; }
   .row.blocked { border-color: #e5484d66; background: #2a1518; }
   .row.passed { border-color: #2ea04366; background: #102218; }
+  .row.fresh { animation: flash 1.2s ease; }
+  @keyframes flash { from { box-shadow: 0 0 0 3px #e5484d; } to { box-shadow: 0 0 0 0 #e5484d00; } }
+  #results.lit { outline: 3px solid #3fb950; outline-offset: 4px; border-radius: 16px; }
   .when, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
   .when { color: #8b98a8; font-size: 11px; }
   .title { font-weight: 750; font-size: 14px; }
@@ -95,6 +103,11 @@
     .landing, .layout { grid-template-columns: 1fr; }
     header { flex-wrap: wrap; }
     .pill { margin-left: 0; }
+    .actions { position: sticky; top: 0; z-index: 4; background: #070b11f2; padding: 8px 0; }
+    button { width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .row.fresh { animation: none; }
   }
 </style>
 </head>
@@ -127,7 +140,11 @@
     </div>
   </header>
   <div class="banner" id="rail-label">Mock payment rail, real executed security checks.</div>
-  <div class="status" id="status" hidden></div>
+  <div class="actions">
+    <button type="button" id="run">Run demo</button>
+    <button type="button" id="startup">Show startup snapshot</button>
+  </div>
+  <div class="status" id="status" role="status" aria-live="assertive">Press Run demo. Each check shows up here, one at a time.</div>
   <section class="landing">
     <article class="card">
       <h2>What TPA is</h2>
@@ -155,11 +172,8 @@
       </article>
     </div>
   </section>
-  <div class="actions">
-    <button type="button" id="run">Run demo</button>
-    <button type="button" id="startup">Show startup snapshot</button>
-  </div>
   <div class="chips" id="scenarios"></div>
+  <div id="results">
   <section class="tiles" id="tiles" aria-label="Security stats"></section>
   <div class="layout">
     <section class="panel">
@@ -171,6 +185,7 @@
       <div id="payments"></div>
       <p class="note" id="pay-note"></p>
     </section>
+  </div>
   </div>
   <footer>
     <p>Startup numbers come from checks this process executed before it opened the port. Run demo repeats those checks in a sandbox and returns them only to this browser. Presence, rug-pull, and honeypot stay Not recorded unless a real result is stored. This page does not move money and does not call a card network or a chain.</p>
@@ -198,13 +213,31 @@
     if (recorded !== true || value == null) return "Not recorded";
     return String(value);
   }
-  function tile(key, value, note, tone) {
+  function tile(key, value, note, tone, name) {
     const card = node("article", "tile");
+    if (name) card.dataset.tile = name;
     card.appendChild(node("div", "k", key));
     const blank = value === "Not recorded" || value === "No checks yet";
     card.appendChild(node("div", "v" + (blank ? " blank" : tone ? " " + tone : ""), value));
     card.appendChild(node("div", "n", note || ""));
     return card;
+  }
+  function setStatus(kind, text) {
+    const status = $("status");
+    status.hidden = false;
+    status.className = "status" + (kind === "error" ? " error" : kind === "done" ? " done" : "");
+    status.textContent = text;
+  }
+  function stepDelay() {
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    return reduce ? 0 : 700;
+  }
+  function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+  function scrollResults() {
+    const results = $("results");
+    results.classList.add("lit");
+    if (results.scrollIntoView) results.scrollIntoView({ behavior: "smooth", block: "start" });
+    setTimeout(() => results.classList.remove("lit"), 1600);
   }
   function renderDashboard(snapshot) {
     const data = snapshot.dashboard || {};
@@ -213,8 +246,8 @@
     const safety = data.safety || {};
     const tiles = $("tiles");
     clear(tiles);
-    tiles.appendChild(tile("Checks passed", countLabel(checks.passed, checks.recorded), checks.note || "", "good"));
-    tiles.appendChild(tile("Checks blocked", countLabel(checks.blocked, checks.recorded), checks.recorded ? "Refused decisive checks in this audit window." : checks.note || "", "bad"));
+    tiles.appendChild(tile("Checks passed", countLabel(checks.passed, checks.recorded), checks.note || "", "good", "passed"));
+    tiles.appendChild(tile("Checks blocked", countLabel(checks.blocked, checks.recorded), checks.recorded ? "Refused decisive checks in this audit window." : checks.note || "", "bad", "blocked"));
     tiles.appendChild(tile("Person pass rate", rateLabel(pillars.person), (pillars.person && pillars.person.note) || ""));
     tiles.appendChild(tile("Presence pass rate", rateLabel(pillars.presence), (pillars.presence && pillars.presence.note) || ""));
     tiles.appendChild(tile("Permission pass rate", rateLabel(pillars.permission), (pillars.permission && pillars.permission.note) || ""));
@@ -292,32 +325,90 @@
       contactHost.appendChild(link);
     }
   }
+  function setCount(name, value) {
+    const card = document.querySelector('[data-tile="' + name + '"] .v');
+    if (!card) return;
+    card.textContent = String(value);
+    card.className = "v " + (name === "passed" ? "good" : "bad");
+  }
+  function failureText(response, body) {
+    const server = body && typeof body.error === "string" ? body.error : "The demo run did not finish.";
+    if (response && response.status === 429) {
+      const retry = Number(response.headers.get("retry-after"));
+      const waitFor = Number.isFinite(retry) && retry > 0 ? " Try again in " + retry + " seconds." : " Wait a moment, then try again.";
+      return server.replace(/\.$/, "") + "." + waitFor;
+    }
+    return /try again/i.test(server) ? server : server.replace(/\.$/, "") + ". Try again.";
+  }
+  async function playRun(snapshot) {
+    const replay = snapshot.replay || { steps: [], finish: "" };
+    const steps = Array.isArray(replay.steps) ? replay.steps : [];
+    const checks = (snapshot.dashboard && snapshot.dashboard.checks) || {};
+    viewing = "sandbox";
+    renderDashboard(snapshot);
+    const feed = $("feed");
+    clear(feed);
+    $("feed-meta").textContent = "Playing now";
+    setCount("passed", checks.recorded ? 0 : "Not recorded");
+    setCount("blocked", checks.recorded ? 0 : "Not recorded");
+    setStatus("run", "Running the five checks. Each result appears in the feed.");
+    scrollResults();
+    let passed = 0;
+    let blocked = 0;
+    for (const step of steps) {
+      await wait(stepDelay());
+      passed += Number(step.passedDelta) || 0;
+      blocked += Number(step.blockedDelta) || 0;
+      if (checks.recorded) { setCount("passed", passed); setCount("blocked", blocked); }
+      const row = node("div", "row fresh " + (step.result === "blocked" ? "blocked" : "passed"));
+      const body = node("div");
+      body.appendChild(node("div", "title", step.title || "Check"));
+      body.appendChild(node("div", "detail", step.detail || step.reason || ""));
+      row.append(node("div", "when", "Just now"), body, node("span", "badge " + (step.result === "blocked" ? "blocked" : "passed"), step.badge || (step.result === "blocked" ? "BLOCKED" : "PASSED")));
+      feed.appendChild(row);
+      if (row.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+    if (checks.recorded && checks.passed != null && checks.blocked != null) {
+      setCount("passed", checks.passed);
+      setCount("blocked", checks.blocked);
+    }
+    $("feed-meta").textContent = steps.length ? String(steps.length) + " just ran" : "";
+    setStatus("done", replay.finish || "Done. Every check ran just now in a sandbox.");
+    scrollResults();
+  }
   async function loadStartup() {
     viewing = "startup";
     const response = await fetch("/api/public-dashboard", { cache: "no-store" });
     if (!response.ok) throw new Error("dashboard");
     renderDashboard(await response.json());
-    $("status").hidden = true;
+    setStatus("run", "Press Run demo. Each check shows up here, one at a time.");
   }
-  $("startup").addEventListener("click", () => { loadStartup().catch(() => { $("status").hidden = false; $("status").textContent = "Could not read the startup snapshot."; }); });
+  $("startup").addEventListener("click", () => {
+    if ($("run").disabled) return;
+    loadStartup().catch(() => setStatus("error", "Could not read the startup snapshot. Try again."));
+  });
   $("run").addEventListener("click", async () => {
+    if ($("run").disabled) return;
     $("run").disabled = true;
-    $("status").hidden = false;
-    $("status").textContent = "Running the checks in a sandbox.";
+    $("startup").disabled = true;
+    $("run").textContent = "Running...";
+    setStatus("run", "Running the checks now.");
     try {
       const response = await fetch("/api/public-demo/run", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        $("status").textContent = typeof body.error === "string" ? body.error : "The demo run did not finish.";
+        viewing = "hold";
+        setStatus("error", failureText(response, body));
         return;
       }
-      viewing = "sandbox";
-      renderDashboard(body);
-      $("status").textContent = "Showing your sandbox run. It is not saved on the server.";
+      await playRun(body);
     } catch {
-      $("status").textContent = "Could not reach the demo runner.";
+      viewing = "hold";
+      setStatus("error", "Could not reach the demo runner. Check your connection and try again.");
     } finally {
       $("run").disabled = false;
+      $("startup").disabled = false;
+      $("run").textContent = "Run demo";
     }
   });
   fetch("/api/public-site", { cache: "no-store" }).then(response => response.json()).then(renderSite).catch(() => {
