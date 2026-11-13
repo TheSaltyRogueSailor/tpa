@@ -70,7 +70,8 @@ describe("public demo site config", () => {
       href: "https://x.com/messages/compose?recipient_id=1957940007609724928",
     });
     expect(contactLink({ ...config, contact: { ...config.contact, href: "" } })).toBeNull();
-    expect(config.video.href).toBe("");
+    expect(config.video.title).toBe("Demo video (4:45)");
+    expect(config.video.href).toBe("https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4");
   });
 });
 
@@ -120,6 +121,8 @@ describe("public demo HTTP", () => {
     const site = await (await fetch(`${base}/api/public-site`)).json();
     expect(site.contact.href).toBe("https://x.com/messages/compose?recipient_id=1957940007609724928");
     expect(site.pricing.freePilot).toBe("Free pilot");
+    expect(site.video.title).toBe("Demo video (4:45)");
+    expect(site.video.href).toBe("https://github.com/TheSaltyRogueSailor/tpa/releases/download/hackathon-v1/TPA-demo-walkthrough.mp4");
     const body = await (await fetch(`${base}/api/public-dashboard`)).json();
     expect(body).toMatchObject({
       mode: "public-demo",

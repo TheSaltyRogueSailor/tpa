@@ -45,7 +45,7 @@ What the page shows:
 - Presence, rug-pull, and honeypot stay **Not recorded** because this demo does not store those results.
 - Pricing from `public-demo/site-config.json`: Free pilot, and Contact us for pricing for paid plans.
 - Get TPA links to a DM to @Saltymetax on X. An empty `contact.href` hides the button.
-- The demo video slot stays a placeholder until `video.href` is an https URL.
+- The demo video button is labeled Demo video (4:45) and links to the walkthrough from `video.href` in `public-demo/site-config.json`.
 
 `Run demo` repeats the same checks in a per-request sandbox. The result is returned only to that browser. It does not replace the startup snapshot and it cannot authorize, consume, or read a private audit log. `METAL_LIVE`, `AIRI_LIVE`, a mandate signing key, a database URL, or a local `.env` / Metal wallet file makes the process refuse to start. The refusal does not print the value.
 
@@ -57,7 +57,7 @@ Deploy on Render (Blueprint, do this yourself; nothing here creates a Render acc
 4. Do not add environment variables. Leave `METAL_LIVE` and `AIRI_LIVE` unset. Do not upload `.env`, wallet keys, or API credentials.
 5. Deploy. Open [https://tpa-public-demo.onrender.com/dashboard](https://tpa-public-demo.onrender.com/dashboard).
 
-The same build and start commands work if you create a Node web service by hand instead of a Blueprint. The live service stays on the free plan and deploys from branch `lumi/public-demo`. Free instances sleep when idle; the first open after sleep can take about a minute. The existing walkthrough video is linked at the top of this README. Paste an https URL into `public-demo/site-config.json` under `video.href` when you want that button on the page.
+The same build and start commands work if you create a Node web service by hand instead of a Blueprint. The live service stays on the free plan and deploys from branch `lumi/public-demo`. Free instances sleep when idle; the first open after sleep can take about a minute. The walkthrough video is linked at the top of this README and on the dashboard from `video.href` in `public-demo/site-config.json`.
 
 ### The three protections
 
