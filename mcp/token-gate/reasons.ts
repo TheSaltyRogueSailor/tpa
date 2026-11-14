@@ -28,7 +28,7 @@ export const TOKEN_REASON_TEXT: Readonly<Record<string, string>> = {
   rugcheck_warning: "RugCheck reports a risk",
   rugcheck_unavailable: "RugCheck could not be reached, so its checks were skipped",
   rugcheck_skipped: "RugCheck was turned off for this call",
-  issuer_controlled_stablecoin: "Regulated stablecoin on the TPA allowlist: its issuer keeps mint and freeze authority on purpose, so these are warnings, not blocks. The issuer can still freeze or mint.",
+  issuer_controlled_stablecoin: "Regulated stablecoin on the TPA allowlist (USDC, USDT or PYUSD): its issuer keeps these controls on purpose, so they are warnings, not blocks. Circle and Tether can freeze and mint. Paxos can freeze, mint, and move funds from holders (PYUSD permanent delegate).",
   trade_history_not_provided: "No pump.fun trade history was given, so holder concentration, bundles, sells and creator selling were not evaluated",
 };
 

@@ -414,7 +414,7 @@ Regulated stablecoins keep mint and freeze authority on purpose. For three allow
 | USDT | Tether | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | [Tether supported protocols](https://tether.to/en/supported-protocols/) |
 | PYUSD | Paxos (for PayPal) | `2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo` | [Paxos PYUSD mainnet](https://docs.paxos.com/guides/stablecoin/pyusd/mainnet) |
 
-PYUSD on mainnet also uses the Token-2022 permanent delegate, transfer hook and confidential transfer extensions, so it still blocks today on `token2022_dangerous_extension`. Set `TPA_SHIELD_SOLANA_RPC_URL` (https only) to use your own RPC; the default is the free public mainnet RPC.
+PYUSD also uses the Token-2022 permanent delegate, transfer hook and confidential transfer extensions. For the PYUSD mint on the Token-2022 program only, those three extensions are warnings too, and the warning says that Paxos can freeze, mint, and move funds from holders (permanent delegate). Any other extension, a non-zero transfer fee, or any other block reason still blocks PYUSD, and no other token gets the extension allowance. Set `TPA_SHIELD_SOLANA_RPC_URL` (https only) to use your own RPC; the default is the free public mainnet RPC.
 
 Build it once (Node.js 22, pnpm 10.18.0):
 

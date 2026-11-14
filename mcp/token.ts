@@ -11,7 +11,7 @@ import {
   type CreatorHistory, type FetchLike, type MintInfo, type PumpTrade, type RugcheckInfo, type TpaVerdict,
 } from "./token-gate/guard.js";
 import { TOKEN_REASON_TEXT, tokenReasonCode } from "./token-gate/reasons.js";
-import { ISSUER_CONTROLLED_STABLECOINS, ISSUER_DOWNGRADABLE_CODES, issuerStablecoin } from "./token-gate/stablecoins.js";
+import { ISSUER_CONTROLLED_STABLECOINS, isIssuerDowngradable, issuerStablecoin } from "./token-gate/stablecoins.js";
 import { TOKEN_GATE_THRESHOLDS, TOKEN_GATE_THRESHOLDS_VERSION, tokenGateConfig } from "./token-gate/thresholds.js";
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -97,8 +97,8 @@ export async function checkToken(input: CheckTokenInput, io: TokenGateIo = {}): 
   // mint and freeze authority alone become warnings. Any other block reason keeps the decision at block.
   const stablecoin = issuerStablecoin(mint);
   let blocking = reasons;
-  if (stablecoin && mintInfo?.program === stablecoin.program && reasons.length > 0 && reasons.every(entry => ISSUER_DOWNGRADABLE_CODES.has(entry.code))) {
-    const allowance: TokenDecisionReason = { code: "issuer_controlled_stablecoin", text: TOKEN_REASON_TEXT.issuer_controlled_stablecoin!, detail: `${stablecoin.symbol} (${stablecoin.issuer}), mint verified from ${stablecoin.source}` };
+  if (stablecoin && mintInfo?.program === stablecoin.program && reasons.length > 0 && reasons.every(entry => isIssuerDowngradable(stablecoin, entry.code, entry.detail))) {
+    const allowance: TokenDecisionReason = { code: "issuer_controlled_stablecoin", text: `Regulated stablecoin on the TPA allowlist. ${stablecoin.issuerPowers} These controls are intentional, so they are warnings, not blocks.`, detail: `${stablecoin.symbol} (${stablecoin.issuer}), mint verified from ${stablecoin.source}` };
     warnings = [allowance, ...reasons, ...warnings];
     blocking = [];
   }
@@ -134,8 +134,8 @@ export function tokenGatePolicy() {
       "with trades: curve_complete, top_holder_concentration, top5_concentration, creator_holds, bundled_launch, insider_share, volume_from_one_wallet, creator_selling",
       "creator history: serial_launcher, creator_dumped_before", "RugCheck: rugcheck_rugged, rugcheck_creator_tokens, freeze / mint authority / copycat / honeypot danger risks"],
     issuerControlledStablecoins: {
-      rule: "For these exact mints (and expected token program), mint_authority_active and freeze_authority_active alone return warn with issuer_controlled_stablecoin. Any other block reason still blocks.",
-      mints: ISSUER_CONTROLLED_STABLECOINS.map(entry => ({ symbol: entry.symbol, issuer: entry.issuer, mint: entry.mint, program: entry.program, source: entry.source })),
+      rule: "For these exact mints (and expected token program), mint_authority_active and freeze_authority_active, plus each mint's listed Token-2022 extensions (PYUSD only: permanentDelegate, transferHook, confidentialTransferMint), return warn with issuer_controlled_stablecoin instead of block. Any other extension or block reason still blocks.",
+      mints: ISSUER_CONTROLLED_STABLECOINS.map(entry => ({ symbol: entry.symbol, issuer: entry.issuer, mint: entry.mint, program: entry.program, allowedExtensions: entry.allowedExtensions ?? [], issuerPowers: entry.issuerPowers, source: entry.source })),
     },
     warns: ["issuer_controlled_stablecoin", "rugcheck_unavailable", "trade_history_not_provided", "sell_unverified", "same_slot_cluster", "few_early_buyers", "creator_unknown", "other RugCheck risks"],
     network: "Reads one public Solana RPC call (default the free public mainnet RPC, override with TPA_SHIELD_SOLANA_RPC_URL) and the free RugCheck API. No keys, short timeouts.",

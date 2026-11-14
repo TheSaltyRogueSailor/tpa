@@ -13,6 +13,11 @@ const SPL = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const T22 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+/** PYUSD's mainnet extension list as read on Nov 13, 2026 (transfer fee configured at 0 bps). */
+const PYUSD_EXTENSIONS: Array<Record<string, unknown>> = [
+  { extension: "mintCloseAuthority" }, { extension: "permanentDelegate" }, { extension: "transferFeeConfig", state: { newerTransferFee: { transferFeeBasisPoints: 0 } } },
+  { extension: "confidentialTransferMint" }, { extension: "confidentialTransferFeeConfig" }, { extension: "transferHook" }, { extension: "metadataPointer" }, { extension: "tokenMetadata" },
+];
 /** Not on the allowlist, same authorities as USDC. */
 const LOOKALIKE = "Vote111111111111111111111111111111111111111";
 const AUTHORITIES = { mintAuthority: "BJE5MMbqXjVwjAF7oxwPYXnTXDyspzZyt4vwenNw5ruG", freezeAuthority: "7dGbd2QZcCKcTndnHcTL8q7SMVXAkp688NTQYwrRCrar" };
@@ -137,15 +142,54 @@ describe("check_token over MCP", () => {
     }
   });
 
-  it("PYUSD: warns with authorities only, but blocks on its Token-2022 permanent delegate and transfer hook", async () => {
+  it("PYUSD: warns with authorities only", async () => {
     routes[PYUSD] = { rpc: mintAccount(AUTHORITIES, T22), rugcheck: cleanReport };
-    const authoritiesOnly = await token({ mint: PYUSD });
-    expect(authoritiesOnly.decision).toBe("warn");
-    expect(authoritiesOnly.warnings[0].code).toBe("issuer_controlled_stablecoin");
-    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: [{ extension: "permanentDelegate" }, { extension: "transferHook" }, { extension: "metadataPointer" }] }, T22), rugcheck: cleanReport };
-    const live = await token({ mint: PYUSD });
-    expect(live.decision).toBe("block");
-    expect(live.reasons.map((r: { code: string }) => r.code)).toEqual(["mint_authority_active", "freeze_authority_active", "token2022_dangerous_extension", "token2022_dangerous_extension"]);
+    const body = await token({ mint: PYUSD });
+    expect(body.decision).toBe("warn");
+    expect(body.warnings[0].code).toBe("issuer_controlled_stablecoin");
+  });
+
+  it("PYUSD: warns with exactly its known Token-2022 extensions, and keeps them visible", async () => {
+    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: PYUSD_EXTENSIONS }, T22), rugcheck: cleanReport };
+    const body = await token({ mint: PYUSD });
+    expect(body.decision).toBe("warn");
+    expect(body.reasons).toEqual([]);
+    expect(body.warnings[0].code).toBe("issuer_controlled_stablecoin");
+    expect(body.warnings[0].text).toMatch(/Paxos can freeze holders, mint new PYUSD, and move funds out of any holder's account \(permanent delegate\)/);
+    expect(body.warnings.map((w: { detail: string }) => w.detail).slice(1, 6)).toEqual([
+      "mint_authority_active", "freeze_authority_active(honeypot_risk)", "token2022_permanentDelegate", "token2022_confidentialTransferMint", "token2022_transferHook",
+    ]);
+  });
+
+  it("PYUSD: an extra dangerous extension or a transfer fee still blocks", async () => {
+    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: [...PYUSD_EXTENSIONS, { extension: "pausable" }] }, T22), rugcheck: cleanReport };
+    const extra = await token({ mint: PYUSD });
+    expect(extra.decision).toBe("block");
+    expect(extra.reasons.map((r: { detail: string }) => r.detail)).toContain("token2022_pausable");
+    expect(extra.warnings.map((w: { code: string }) => w.code)).not.toContain("issuer_controlled_stablecoin");
+    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: PYUSD_EXTENSIONS.map(e => e.extension === "transferFeeConfig" ? { extension: "transferFeeConfig", state: { newerTransferFee: { transferFeeBasisPoints: 25 } } } : e) }, T22), rugcheck: cleanReport };
+    const fee = await token({ mint: PYUSD });
+    expect(fee.decision).toBe("block");
+    expect(fee.reasons.map((r: { code: string }) => r.code)).toContain("transfer_fee");
+    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: PYUSD_EXTENSIONS }, T22), rugcheck: { rugged: false, creatorTokens: [], risks: [{ name: "Honeypot detected", level: "danger" }] } };
+    expect((await token({ mint: PYUSD })).decision).toBe("block");
+    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: PYUSD_EXTENSIONS }, SPL), rugcheck: cleanReport };
+    expect((await token({ mint: PYUSD })).decision).toBe("block");
+  });
+
+  it("the PYUSD extension allowance applies to no other mint", async () => {
+    const lookalike = "Config1111111111111111111111111111111111111";
+    routes[lookalike] = { rpc: mintAccount({ ...AUTHORITIES, extensions: PYUSD_EXTENSIONS }, T22), rugcheck: cleanReport };
+    const body = await token({ mint: lookalike });
+    expect(body.decision).toBe("block");
+    expect(body.reasons.filter((r: { code: string }) => r.code === "token2022_dangerous_extension").length).toBe(3);
+    const saved = routes[USDC]!;
+    routes[USDC] = { rpc: mintAccount({ ...AUTHORITIES, extensions: [{ extension: "permanentDelegate" }] }, T22), rugcheck: cleanReport };
+    try {
+      expect((await token({ mint: USDC })).decision).toBe("block");
+    } finally {
+      routes[USDC] = saved;
+    }
   });
 
   it("degrades to a rugcheck_unavailable warning when RugCheck is down", async () => {
