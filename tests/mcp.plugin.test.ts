@@ -39,10 +39,12 @@ afterAll(async () => { await client.close(); });
 describe("TPA Shield MCP server", () => {
   it("lists exactly the read-only tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map(tool => tool.name).sort()).toEqual(["check_checkout", "check_payment", "check_transfer", "explain_decision", "get_policy"]);
+    expect(tools.map(tool => tool.name).sort()).toEqual(["check_checkout", "check_payment", "check_token", "check_transfer", "explain_decision", "get_policy"]);
     for (const tool of tools) {
       expect(tool.annotations?.readOnlyHint).toBe(true);
       expect(tool.annotations?.destructiveHint).toBe(false);
+    }
+    for (const tool of tools.filter(entry => entry.name !== "check_token")) {
       expect(tool.annotations?.openWorldHint).toBe(false);
     }
   });
@@ -108,7 +110,8 @@ describe("TPA Shield MCP server", () => {
     const { body } = await call("get_policy");
     expect(body.readOnly).toBe(true);
     expect(body.mode.paymentExecution).toBe(false);
-    expect(body.notIncluded.join(" ")).toMatch(/rug-pull/);
+    expect(body.notIncluded.join(" ")).toMatch(/Pyth/);
+    expect(body.tokenGate.blocks.join(" ")).toMatch(/honeypot/);
     expect(body.enforcedOnlyByTheFullTpaService.join(" ")).toMatch(/passkey/);
   });
 

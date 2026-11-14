@@ -15,6 +15,7 @@ import {
 } from "../src/domain.js";
 import { describeReason } from "../src/dashboard.js";
 import { TpaServiceError, validateRecipient } from "../src/service.js";
+import { TOKEN_REASON_TEXT } from "./token-gate/reasons.js";
 
 export const SHIELD_VERSION = "0.1.0";
 export const PREFLIGHT_NOTE = "Pre-flight check only. A pass is not an approval: TPA still requires the owner's passkey on the exact terms, a server-signed single-use mandate, and an exact match at payment time.";
@@ -41,6 +42,8 @@ const SHIELD_REASON_TEXT: Readonly<Record<string, string>> = {
 };
 
 export function explainReason(code: string): { code: string; text: string; category: string; known: boolean } {
+  const token = TOKEN_REASON_TEXT[code];
+  if (token) return { code, text: token, category: "token safety (check_token)", known: true };
   const bare = code.startsWith("terms_changed:") ? code.slice("terms_changed:".length) : code;
   const dashboardText = describeReason(code);
   const known = dashboardText !== code || code in SHIELD_REASON_TEXT || bare in SHIELD_REASON_TEXT;
@@ -181,10 +184,10 @@ export function getPolicy() {
       "Agent request signatures (Visa Trusted Agent Protocol, Presence)",
     ],
     notIncluded: [
-      "Token rug-pull or honeypot screening (not implemented in TPA yet)",
+      "Token checks for chains other than Solana (EVM and Rootstock tokens are not screened yet)",
       "Oracle price checks such as Pyth (not implemented in TPA yet)",
     ],
-    guarantees: "These tools never sign, send transactions, hold keys, read secrets, or call the network.",
+    guarantees: "These tools never sign, send transactions, hold keys, or read secrets. Only check_token makes network reads (public Solana RPC and the free RugCheck API); every other tool is offline.",
     note: PREFLIGHT_NOTE,
   };
 }
