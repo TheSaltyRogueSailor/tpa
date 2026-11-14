@@ -1,0 +1,24 @@
+{
+  "name": "tpa-shield",
+  "displayName": "TPA Shield",
+  "version": "0.1.0",
+  "description": "Read-only pre-flight checks an AI agent calls before it moves money: checkout validation, exact match against the owner-approved terms, and simple transfer checks. It never signs, sends transactions, holds keys or calls the network.",
+  "publisher": "Dingdong Platform, LLC",
+  "license": "MIT",
+  "repository": "https://github.com/TheSaltyRogueSailor/tpa",
+  "mcp": {
+    "transport": "stdio",
+    "command": "node",
+    "args": [".mcp-build/mcp/server.js"],
+    "build": "pnpm install --frozen-lockfile --ignore-scripts && pnpm mcp:build",
+    "env": {}
+  },
+  "tools": [
+    { "name": "check_checkout", "readOnly": true, "summary": "Validate a checkout before asking the owner to approve it." },
+    { "name": "check_payment", "readOnly": true, "summary": "Block a payment if the checkout differs from the approved one." },
+    { "name": "check_transfer", "readOnly": true, "summary": "Validate a simple transfer and block changes to approved terms." },
+    { "name": "get_policy", "readOnly": true, "summary": "What TPA Shield checks, its limits, and what it does not check." },
+    { "name": "explain_decision", "readOnly": true, "summary": "Plain-language text for a TPA reason code." }
+  ],
+  "permissions": { "network": false, "secrets": false, "signing": false, "payments": false }
+}

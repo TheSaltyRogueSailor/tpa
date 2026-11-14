@@ -163,7 +163,8 @@ export function formatDashboardAmount(amountBaseUnits: string, currency: "USD" |
   return currency === "USD" ? `$${formatted}` : `${formatted} DOGE`;
 }
 
-function describeReason(code: string): string {
+/** Plain-language text for a TPA refusal reason code, as shown on the security dashboard. */
+export function describeReason(code: string): string {
   const known = REASON_TEXT[code];
   if (known) return known;
   if (code.startsWith("terms_changed:")) return "Checkout changed after approval";

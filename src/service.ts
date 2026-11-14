@@ -110,7 +110,8 @@ function mapStoreError(error: unknown): never {
   throw new TpaServiceError("unavailable", "TPA authorization service is temporarily unavailable.");
 }
 
-function validateRecipient(currency: "USD" | "DOGE", recipient: string): void {
+/** Recipient rule for a currency (USD: internal account reference, DOGE: checksummed mainnet address). Throws TpaServiceError("invalid"). */
+export function validateRecipient(currency: "USD" | "DOGE", recipient: string): void {
   if (currency === "USD") {
     if (!/^user:[1-9][0-9]{0,9}$/.test(recipient)) throw new TpaServiceError("invalid", "USD pilot recipient must be a named internal account reference.");
     return;

@@ -11,6 +11,7 @@ cache/
 *.log
 .demo-build/
 .public-demo-build/
+.mcp-build/
 
 # Key material (never commit signing keys or exported key files)
 *.pem

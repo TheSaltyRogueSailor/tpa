@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "rootDir": ".",
+    "outDir": "./.mcp-build"
+  },
+  "include": [
+    "src/**/*.ts",
+    "mcp/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "ledger",
+    ".demo-build",
+    ".public-demo-build",
+    ".mcp-build"
+  ]
+}

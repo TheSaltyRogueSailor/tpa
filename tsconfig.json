@@ -19,7 +19,8 @@
     "tests/**/*.ts",
     "scripts/**/*.ts",
     "shopper/**/*.ts",
-    "public-demo/**/*.ts"
+    "public-demo/**/*.ts",
+    "mcp/**/*.ts"
   ],
   "exclude": [
     "node_modules",

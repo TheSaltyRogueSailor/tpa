@@ -215,6 +215,7 @@ The independently tested source checkpoint is documented in [VALIDATION.md](VALI
 | `scripts/generate-mandate-signing-key.mjs` | Generates an Ed25519 mandate signing key into a 0600 file and prints only the key id and public key. |
 | `scripts/sync-lifecycle-store.mjs` | Reusable, fail-closed source transform for a final lifecycle-store refresh. |
 | `scripts/redteam-demo.ts`, `scripts/demo/` | Local in-memory red-team demo (see below). |
+| `mcp/` | TPA Shield MCP server (stdio, read-only) and its plugin manifest. See "TPA Shield MCP plugin" below. |
 | `tests/` | Offline synthetic lifecycle, policy, review, and host-boundary tests, plus opt-in database suites for mandate hardening and Proof of Permission refusals. |
 
 The `ledger/` directory is included as an independently locked compiler and local-EVM test package. Its source is part of this TPA-only repository but not part of the authorization library's runtime build. It has no deployment, wallet, signing-key or external-chain path. See `ledger/README.md` and run its installation/test commands separately.
@@ -374,6 +375,54 @@ pnpm test
 ```
 
 The ledger passes **20 tests**. `.github/workflows/verify.yml` runs both sets without a database, so CI runs the 233 offline library tests and the 20 ledger tests.
+
+## TPA Shield MCP plugin (for AI agents)
+
+TPA Shield wraps the TPA checks as an [MCP](https://modelcontextprotocol.io) server, so any MCP-capable AI agent can ask TPA before it moves money. It runs locally over stdio and is read-only: it never signs, never sends a transaction, never holds wallet keys, never reads secrets or `.env` files, and makes no network calls. It reuses the library's own checkout validation and the same exact-match that `consume()` runs at payment time.
+
+A pass is a pre-flight result, not an approval. Real payments still need the owner's passkey on the exact terms, a server-signed single-use mandate, and an exact match at payment time, all enforced by the full TPA service.
+
+| Tool | What it does |
+| --- | --- |
+| `check_checkout` | Validates a checkout before the owner is asked to approve it: schema, one line per SKU, total equals items plus shipping plus tax, recipient rule for the currency. |
+| `check_payment` | Compares the checkout about to be paid with the approved one. Any change to merchant, recipient, currency, items, prices, shipping, tax or total returns `block` with a `terms_changed:*` reason. |
+| `check_transfer` | Checks a simple transfer (amount, recipient, currency; USD account reference or checksummed Dogecoin address), and optionally blocks any change from the approved transfer. |
+| `get_policy` | Returns what TPA Shield checks, its limits, what only the full TPA service enforces, and what it does not check. |
+| `explain_decision` | Turns a TPA reason code into plain language and a category. |
+
+Every decision has the same shape: `decision` (`pass` or `block`), `reasons` (code and text), `checksRun`, and a `note`. Token rug-pull or honeypot screening and oracle price checks are not part of TPA yet, and `get_policy` says so.
+
+Build it once (Node.js 22, pnpm 10.18.0):
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm mcp:build
+```
+
+Then add it to your MCP client config (Claude Desktop, Cursor, and most MCP clients use this shape). Use the absolute path to your checkout:
+
+```json
+{
+  "mcpServers": {
+    "tpa-shield": {
+      "command": "node",
+      "args": ["/path/to/tpa/.mcp-build/mcp/server.js"]
+    }
+  }
+}
+```
+
+The server needs no environment variables. `pnpm mcp` builds and starts it directly. `mcp/tpa-shield.plugin.json` is a small plugin manifest listing the tools and their read-only permissions, and `tests/mcp.plugin.test.ts` drives every tool through a real MCP client.
+
+Example call, `check_payment` with the merchant swapped after approval:
+
+```json
+{
+  "decision": "block",
+  "check": "check_payment",
+  "reasons": [{ "code": "terms_changed:merchant_mismatch", "text": "Merchant changed after approval" }]
+}
+```
 
 ## Red-team demo (local, in memory)
 
