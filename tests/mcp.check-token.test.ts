@@ -11,6 +11,11 @@ const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const SAFE = "So11111111111111111111111111111111111111112";
 const SPL = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const T22 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+const PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+/** Not on the allowlist, same authorities as USDC. */
+const LOOKALIKE = "Vote111111111111111111111111111111111111111";
+const AUTHORITIES = { mintAuthority: "BJE5MMbqXjVwjAF7oxwPYXnTXDyspzZyt4vwenNw5ruG", freezeAuthority: "7dGbd2QZcCKcTndnHcTL8q7SMVXAkp688NTQYwrRCrar" };
 
 /** Shape of a jsonParsed getAccountInfo result for a mint. */
 function mintAccount(info: Record<string, unknown>, owner = SPL) {
@@ -40,7 +45,9 @@ function stubFetch(routes: Record<string, Route>, calls: string[] = []): FetchLi
 const cleanReport = { rugged: false, creatorTokens: [], risks: [] };
 const routes: Record<string, Route> = {
   [SAFE]: { rpc: mintAccount({}), rugcheck: cleanReport },
-  [USDC]: { rpc: mintAccount({ mintAuthority: "BJE5MMbqXjVwjAF7oxwPYXnTXDyspzZyt4vwenNw5ruG", freezeAuthority: "7dGbd2QZcCKcTndnHcTL8q7SMVXAkp688NTQYwrRCrar" }), rugcheck: cleanReport },
+  [USDC]: { rpc: mintAccount(AUTHORITIES), rugcheck: cleanReport },
+  [USDT]: { rpc: mintAccount(AUTHORITIES), rugcheck: cleanReport },
+  [LOOKALIKE]: { rpc: mintAccount(AUTHORITIES), rugcheck: cleanReport },
 };
 
 let client: Client;
@@ -76,11 +83,69 @@ describe("check_token over MCP", () => {
   });
 
   it("blocks a mint with active mint and freeze authority (honeypot risk)", async () => {
-    const body = await token({ mint: USDC });
+    const body = await token({ mint: LOOKALIKE });
     expect(body.decision).toBe("block");
     expect(body.reasons.map((r: { code: string }) => r.code)).toEqual(["mint_authority_active", "freeze_authority_active"]);
     expect(body.reasons[1].text).toMatch(/honeypot/);
     expect(body.reasons[1].layer).toBe("contract");
+  });
+
+  it("warns instead of blocks for allowlisted USDC and USDT when the only blocks are mint and freeze authority", async () => {
+    for (const mint of [USDC, USDT]) {
+      const body = await token({ mint });
+      expect(body.decision, mint).toBe("warn");
+      expect(body.reasons).toEqual([]);
+      const codes = body.warnings.map((w: { code: string }) => w.code);
+      expect(codes.slice(0, 3)).toEqual(["issuer_controlled_stablecoin", "mint_authority_active", "freeze_authority_active"]);
+      expect(body.warnings[0].detail).toMatch(mint === USDC ? /USDC \(Circle\)/ : /USDT \(Tether\)/);
+    }
+  });
+
+  it("still blocks an allowlisted stablecoin on any other block reason", async () => {
+    const cases: Array<[Route, string]> = [
+      [{ rpc: mintAccount(AUTHORITIES), rugcheck: { rugged: true, creatorTokens: [], risks: [] } }, "rugcheck_rugged"],
+      [{ rpc: mintAccount(AUTHORITIES), rugcheck: { rugged: false, creatorTokens: [], risks: [{ name: "Honeypot detected", level: "danger" }] } }, "rugcheck_danger"],
+      [{ rpc: mintAccount({ ...AUTHORITIES, extensions: [{ extension: "transferFeeConfig", state: { newerTransferFee: { transferFeeBasisPoints: 50 } } }] }), rugcheck: cleanReport }, "transfer_fee"],
+      [{ rpc: "down", rugcheck: cleanReport }, "mint_info_unavailable"],
+    ];
+    const saved = routes[USDC]!;
+    try {
+      for (const [route, code] of cases) {
+        routes[USDC] = route;
+        const body = await token({ mint: USDC });
+        expect(body.decision, code).toBe("block");
+        const codes = body.reasons.map((r: { code: string }) => r.code);
+        expect(codes).toContain(code);
+        expect(body.warnings.map((w: { code: string }) => w.code)).not.toContain("issuer_controlled_stablecoin");
+      }
+      routes[USDC] = saved;
+      const dumped = await token({ mint: USDC, creatorHistory: { launchesLastHour: 0, priorDumps: 1, priorTokens: 1 } });
+      expect(dumped.decision).toBe("block");
+      expect(dumped.reasons.map((r: { code: string }) => r.code)).toEqual(["mint_authority_active", "freeze_authority_active", "creator_dumped_before"]);
+    } finally {
+      routes[USDC] = saved;
+    }
+  });
+
+  it("does not apply the allowance when the token program is not the expected one", async () => {
+    const saved = routes[USDC]!;
+    routes[USDC] = { rpc: mintAccount(AUTHORITIES, T22), rugcheck: cleanReport };
+    try {
+      expect((await token({ mint: USDC })).decision).toBe("block");
+    } finally {
+      routes[USDC] = saved;
+    }
+  });
+
+  it("PYUSD: warns with authorities only, but blocks on its Token-2022 permanent delegate and transfer hook", async () => {
+    routes[PYUSD] = { rpc: mintAccount(AUTHORITIES, T22), rugcheck: cleanReport };
+    const authoritiesOnly = await token({ mint: PYUSD });
+    expect(authoritiesOnly.decision).toBe("warn");
+    expect(authoritiesOnly.warnings[0].code).toBe("issuer_controlled_stablecoin");
+    routes[PYUSD] = { rpc: mintAccount({ ...AUTHORITIES, extensions: [{ extension: "permanentDelegate" }, { extension: "transferHook" }, { extension: "metadataPointer" }] }, T22), rugcheck: cleanReport };
+    const live = await token({ mint: PYUSD });
+    expect(live.decision).toBe("block");
+    expect(live.reasons.map((r: { code: string }) => r.code)).toEqual(["mint_authority_active", "freeze_authority_active", "token2022_dangerous_extension", "token2022_dangerous_extension"]);
   });
 
   it("degrades to a rugcheck_unavailable warning when RugCheck is down", async () => {
@@ -166,6 +231,9 @@ describe("check_token over MCP", () => {
     const policy = await client.callTool({ name: "get_policy", arguments: {} });
     const body = JSON.parse((policy.content as Array<{ text: string }>)[0]!.text);
     expect(body.tokenGate.thresholdsVersion).toBe("1.1.0");
+    expect(body.tokenGate.issuerControlledStablecoins.mints.map((m: { symbol: string }) => m.symbol)).toEqual(["USDC", "USDT", "PYUSD"]);
+    const stable = await client.callTool({ name: "explain_decision", arguments: { code: "issuer_controlled_stablecoin" } });
+    expect(JSON.parse((stable.content as Array<{ text: string }>)[0]!.text)).toMatchObject({ category: "token safety (check_token)", known: true });
     expect(body.preflightChecks.check_token).toMatch(/honeypot/);
   });
 });

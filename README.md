@@ -406,7 +406,15 @@ Every decision has the same shape: `decision` (`pass` or `block`, plus `warn` fo
 
 If you also pass the pump.fun `trades` since launch and the `creator` wallet, it checks holder concentration (top holder over 10%, top 5 over 30%, creator over 10%), bundled launches, insider share, one-wallet volume and creator selling. Without trades those checks are not run, and the result says so with a `trade_history_not_provided` warning, so the best a mint-only call can return is `warn`. If RugCheck is down, the call still answers with a `rugcheck_unavailable` warning. `explain_decision` explains every token reason code.
 
-Mint and freeze authority are judged the same for every token. Regulated stablecoins such as USDC keep both on purpose, so `check_token` blocks them too. Set `TPA_SHIELD_SOLANA_RPC_URL` (https only) to use your own RPC; the default is the free public mainnet RPC.
+Regulated stablecoins keep mint and freeze authority on purpose. For three allowlisted Solana mints, when those two are the only block reasons, `check_token` returns `warn` with an `issuer_controlled_stablecoin` warning instead of `block`. Any other block reason (RugCheck rugged or danger, Token-2022 traps, transfer fee, creator or holder checks, unreadable mint) still blocks, and the token program must match. The mints were checked against each issuer's own documentation (`mcp/token-gate/stablecoins.ts`):
+
+| Token | Issuer | Solana mint | Source |
+| --- | --- | --- | --- |
+| USDC | Circle | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) |
+| USDT | Tether | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | [Tether supported protocols](https://tether.to/en/supported-protocols/) |
+| PYUSD | Paxos (for PayPal) | `2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo` | [Paxos PYUSD mainnet](https://docs.paxos.com/guides/stablecoin/pyusd/mainnet) |
+
+PYUSD on mainnet also uses the Token-2022 permanent delegate, transfer hook and confidential transfer extensions, so it still blocks today on `token2022_dangerous_extension`. Set `TPA_SHIELD_SOLANA_RPC_URL` (https only) to use your own RPC; the default is the free public mainnet RPC.
 
 Build it once (Node.js 22, pnpm 10.18.0):
 

@@ -11,6 +11,7 @@ import {
   type CreatorHistory, type FetchLike, type MintInfo, type PumpTrade, type RugcheckInfo, type TpaVerdict,
 } from "./token-gate/guard.js";
 import { TOKEN_REASON_TEXT, tokenReasonCode } from "./token-gate/reasons.js";
+import { ISSUER_CONTROLLED_STABLECOINS, ISSUER_DOWNGRADABLE_CODES, issuerStablecoin } from "./token-gate/stablecoins.js";
 import { TOKEN_GATE_THRESHOLDS, TOKEN_GATE_THRESHOLDS_VERSION, tokenGateConfig } from "./token-gate/thresholds.js";
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -90,8 +91,17 @@ export async function checkToken(input: CheckTokenInput, io: TokenGateIo = {}): 
       : describe(detail.text);
     return { ...described, layer: layerOf(detail.text), observed: detail.observed, limit: detail.limit };
   });
-  const warnings = verdict.warnings.map(describe);
+  let warnings: TokenDecisionReason[] = verdict.warnings.map(describe);
   if (!useRugcheck) warnings.push(describe("rugcheck_skipped"));
+  // Issuer allowance (approved Nov 13, 2026): for an allowlisted regulated stablecoin with the expected token program,
+  // mint and freeze authority alone become warnings. Any other block reason keeps the decision at block.
+  const stablecoin = issuerStablecoin(mint);
+  let blocking = reasons;
+  if (stablecoin && mintInfo?.program === stablecoin.program && reasons.length > 0 && reasons.every(entry => ISSUER_DOWNGRADABLE_CODES.has(entry.code))) {
+    const allowance: TokenDecisionReason = { code: "issuer_controlled_stablecoin", text: TOKEN_REASON_TEXT.issuer_controlled_stablecoin!, detail: `${stablecoin.symbol} (${stablecoin.issuer}), mint verified from ${stablecoin.source}` };
+    warnings = [allowance, ...reasons, ...warnings];
+    blocking = [];
+  }
   const checksRun = [
     "mint address format",
     "mint authority revoked", "freeze authority revoked (honeypot)", "no dangerous Token-2022 extensions", "no transfer fee",
@@ -100,10 +110,10 @@ export async function checkToken(input: CheckTokenInput, io: TokenGateIo = {}): 
     ...(useRugcheck ? ["RugCheck report (rugged flag, creator token count, danger risks)"] : []),
   ];
   return {
-    decision: reasons.length ? "block" : warnings.length ? "warn" : "pass",
+    decision: blocking.length ? "block" : warnings.length ? "warn" : "pass",
     check: "check_token",
     mint,
-    reasons,
+    reasons: blocking,
     warnings,
     checksRun,
     details: {
@@ -123,7 +133,11 @@ export function tokenGatePolicy() {
     blocks: ["mint_info_unavailable (fails closed)", "mint_authority_active", "freeze_authority_active (honeypot)", "token2022_dangerous_extension", "transfer_fee",
       "with trades: curve_complete, top_holder_concentration, top5_concentration, creator_holds, bundled_launch, insider_share, volume_from_one_wallet, creator_selling",
       "creator history: serial_launcher, creator_dumped_before", "RugCheck: rugcheck_rugged, rugcheck_creator_tokens, freeze / mint authority / copycat / honeypot danger risks"],
-    warns: ["rugcheck_unavailable", "trade_history_not_provided", "sell_unverified", "same_slot_cluster", "few_early_buyers", "creator_unknown", "other RugCheck risks"],
+    issuerControlledStablecoins: {
+      rule: "For these exact mints (and expected token program), mint_authority_active and freeze_authority_active alone return warn with issuer_controlled_stablecoin. Any other block reason still blocks.",
+      mints: ISSUER_CONTROLLED_STABLECOINS.map(entry => ({ symbol: entry.symbol, issuer: entry.issuer, mint: entry.mint, program: entry.program, source: entry.source })),
+    },
+    warns: ["issuer_controlled_stablecoin", "rugcheck_unavailable", "trade_history_not_provided", "sell_unverified", "same_slot_cluster", "few_early_buyers", "creator_unknown", "other RugCheck risks"],
     network: "Reads one public Solana RPC call (default the free public mainnet RPC, override with TPA_SHIELD_SOLANA_RPC_URL) and the free RugCheck API. No keys, short timeouts.",
     holderNote: "Holder concentration is computed from pump.fun trades when the caller provides them. RugCheck holder risks are ignored, as in the original gate.",
   };
